@@ -1,0 +1,61 @@
+# LocalSearch Configuration
+
+# Directories to scan for files
+scan_paths:
+  - "//NAS/shared"          # Synology SMB share (example)
+  # - "D:/Documents"        # Local directory (example)
+
+# File extensions to process (grouped by type)
+extensions:
+  text: [".txt", ".md", ".csv", ".json", ".xml", ".html", ".log", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".rst", ".tex"]
+  pdf: [".pdf"]
+  docx: [".docx"]
+  audio: [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".wma", ".aac"]
+  video: [".mp4", ".avi", ".mkv", ".mov", ".webm", ".wmv", ".flv"]
+  image: [".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"]
+
+# Qdrant vector database
+qdrant:
+  host: "localhost"
+  port: 6333
+  collection: "localsearch"
+
+# Ollama LLM
+ollama:
+  host: "http://localhost:11434"
+  model: "llama3"
+
+# Embedding model
+embedding:
+  model: "mixedbread-ai/mxbai-embed-large-v1"
+  batch_size: 64
+  device: "cuda"  # "cuda" for GPU, "cpu" for CPU
+
+# Whisper (audio/video transcription)
+whisper:
+  model_size: "large-v3"
+  device: "cuda"
+  compute_type: "float16"
+  language: null  # null = auto-detect
+
+# Text chunking
+chunking:
+  chunk_size: 1000
+  chunk_overlap: 200
+
+# Scanner
+scanner:
+  max_file_size_mb: 500       # Skip files larger than this
+  use_content_hash: false     # Use mtime+size for change detection (faster)
+  batch_size: 1000            # Files per processing batch
+
+# Query
+query:
+  top_k: 10                   # Number of results to return
+  score_threshold: 0.3        # Minimum similarity score
+
+# Metadata database
+metadata_db: "localsearch_meta.db"
+
+# Logging
+log_level: "INFO"

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localsearch"
+version = "0.1.0"
+description = "Fully local RAG pipeline for searching files on NAS/local storage"
+requires-python = ">=3.11"
+dependencies = [
+    "qdrant-client>=1.7.0",
+    "sentence-transformers>=2.2.0",
+    "faster-whisper>=0.10.0",
+    "PyMuPDF>=1.23.0",
+    "python-docx>=1.1.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "ffmpeg-python>=0.2.0",
+    "ollama>=0.1.0",
+    "click>=8.1.0",
+    "pyyaml>=6.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+localsearch = "localsearch.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["localsearch*"]
