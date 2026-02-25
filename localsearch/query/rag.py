@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 QUERY_EXPANSION_PROMPT = """You are rewriting a question into a search query for a personal file archive (emails, documents, receipts, notes, certificates).
 Your job is to figure out what INFORMATION the user wants, then produce search terms that would appear in a file containing that information.
 IGNORE formatting instructions (like "in a table", "as a list", "summarize"). Focus ONLY on the information need.
+CRITICAL: If the question mentions a specific NAME (person, company, product), repeat that name 2-3 times in the search query. Names are the most important search terms.
+For example: "email for jill" -> "jill email message from jill to jill address"
 For ambiguous terms, prefer the interpretation most relevant to personal records:
 - "keys" / "windows keys" -> Windows product key serial number license key activation code
 - "passwords" / "logins" -> account credentials login password username
@@ -96,6 +98,26 @@ User question: {question}
 
 Search queries:"""
 
+# Common stop words — used for keyword extraction from queries
+_STOP_WORDS = frozenset({
+    'i', 'me', 'my', 'mine', 'we', 'us', 'our', 'you', 'your',
+    'he', 'him', 'his', 'she', 'her', 'it', 'its', 'they', 'them', 'their',
+    'this', 'that', 'these', 'those', 'what', 'which', 'who', 'whom',
+    'when', 'where', 'how', 'why',
+    'a', 'an', 'the', 'is', 'am', 'are', 'was', 'were', 'be', 'been',
+    'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing',
+    'will', 'would', 'could', 'should', 'may', 'might', 'can', 'shall',
+    'and', 'but', 'or', 'so', 'if', 'then', 'than', 'as', 'at', 'of',
+    'in', 'on', 'to', 'for', 'with', 'by', 'from', 'about', 'into',
+    'through', 'during', 'before', 'after', 'above', 'below', 'between',
+    'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further',
+    'not', 'no', 'nor', 'only', 'own', 'same', 'too', 'very',
+    'just', 'also', 'now', 'here', 'there', 'all', 'each', 'every',
+    'both', 'few', 'more', 'most', 'some', 'any', 'other', 'such',
+    'get', 'put', 'find', 'show', 'tell', 'give', 'make', 'use', 'used',
+    'list', 'table', 'please', 'help', 'need', 'want', 'much', 'many',
+})
+
 
 class RAGEngine:
     """Retrieval Augmented Generation using local search + Ollama."""
@@ -175,6 +197,165 @@ class RAGEngine:
         if removed:
             logger.info("Filtered out %d system-file results", removed)
         return filtered
+
+    def _extract_query_keywords(self, question: str) -> list[str]:
+        """Extract distinctive non-stop-word tokens from the question.
+
+        These are words that relevant results should contain.  For example,
+        "what email address have I used for jill" -> ["email", "address", "jill"].
+        """
+        tokens = re.findall(r'\b[a-zA-Z][a-zA-Z\'-]*\b', question.lower())
+        return [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+
+    def _extract_entity_keywords(self, question: str) -> list[str]:
+        """Extract specific entity names (people, products) from the question.
+
+        Looks for names after prepositions like "for", "from", "to", "about".
+        These are the CRITICAL keywords — unlike generic topic words like
+        "email" or "address", these entities must appear in relevant results.
+
+        Example: "what email address have I used for jill" -> ["jill"]
+        """
+        pattern = re.compile(
+            r'\b(?:for|from|to|about|regarding|with)\s+'
+            r'([a-zA-Z][a-zA-Z\'-]*(?:\s+[a-zA-Z][a-zA-Z\'-]*)?)',
+            re.IGNORECASE,
+        )
+        entities = []
+        seen = set()
+        for m in pattern.finditer(question):
+            words = m.group(1).strip().lower().split()
+            for w in words:
+                if w not in _STOP_WORDS and len(w) > 1 and w not in seen:
+                    entities.append(w)
+                    seen.add(w)
+        if entities:
+            logger.info("Entity keywords extracted: %s", entities)
+        return entities
+
+    def _ensure_keyword_coverage(
+        self, results: list[SearchResult], question: str,
+        keywords: list[str], top_k: int, file_type: str | None,
+        entity_keywords: list[str] | None = None,
+    ) -> list[SearchResult]:
+        """Supplement results with targeted searches for missing/underrepresented keywords.
+
+        Semantic search sometimes misses specific names/entities because
+        embeddings don't weight proper nouns.  This supplements with
+        entity-focused follow-up queries so that results containing the
+        entity name actually appear.
+
+        Entity keywords (names, people) are ALWAYS searched for, even if
+        they appear in some results — they may be underrepresented because
+        semantic search gives proper nouns very low weight.
+        """
+        if not keywords or not results:
+            return results
+
+        # Build combined text from all results
+        all_text = ' '.join(
+            (r.text + ' ' + r.file_path).lower() for r in results
+        )
+
+        # Find keywords completely absent from ALL results
+        missing = [kw for kw in keywords if kw not in all_text]
+
+        # Always search aggressively for entity keywords (names, people)
+        # even if they appear in some results — embeddings underweight them
+        # so the initial search typically finds too few entity-matching files.
+        entity_set = set(entity_keywords or [])
+        for ek in entity_set:
+            if ek not in missing:
+                missing.append(ek)
+
+        if not missing:
+            return results  # All keywords already present somewhere
+
+        logger.info("Keywords to supplement (%d results): %s",
+                    len(results), missing)
+
+        seen = {(r.file_path, r.chunk_index) for r in results}
+        supplementary: list[SearchResult] = []
+
+        # Generate targeted queries that embed the missing keyword
+        for kw in missing:
+            # Build context from other keywords
+            context_kws = ' '.join(k for k in keywords if k != kw)
+            targeted_queries = [
+                f"{kw} {context_kws}",
+                f"Dear {kw} email message from to",
+                f"To {kw} From {kw} Subject",
+                f"From: {kw} To: sent received message",
+                f"{kw} {kw} {context_kws} personal contact",
+            ]
+            supp_k = max(top_k * 2, 30)  # search deeper to find entity matches
+            for tq in targeted_queries:
+                extra = self.search_engine.search(
+                    query=tq, top_k=supp_k, file_type=file_type,
+                )
+                for r in extra:
+                    key = (r.file_path, r.chunk_index)
+                    if key not in seen:
+                        # Only keep results that actually contain the keyword
+                        searchable = (r.text + ' ' + r.file_path).lower()
+                        if kw in searchable:
+                            supplementary.append(r)
+                            seen.add(key)
+
+        if supplementary:
+            logger.info("Supplementary search: %d results containing missing keywords",
+                        len(supplementary))
+            results = results + supplementary
+            results.sort(key=lambda r: r.score, reverse=True)
+
+        return results
+
+    def _keyword_rerank(
+        self, results: list[SearchResult], keywords: list[str],
+        entity_keywords: list[str] | None = None,
+    ) -> list[SearchResult]:
+        """Re-rank results to prioritize those containing query keywords.
+
+        Entity keywords (names, people) get a much stronger boost than
+        generic topic keywords.  A result that mentions "jill" should
+        rank WELL above one that only matches "email address".
+
+        Uses additive scoring to avoid all results hitting the 1.0 cap.
+        """
+        if not keywords or not results:
+            return results
+
+        entity_set = set(entity_keywords or [])
+
+        scored: list[tuple[SearchResult, float, int]] = []
+        for r in results:
+            searchable = (r.text + ' ' + r.file_path).lower()
+            # Entity keywords get much stronger bonus than topic keywords
+            entity_matches = sum(1 for kw in keywords if kw in searchable and kw in entity_set)
+            topic_matches = sum(1 for kw in keywords if kw in searchable and kw not in entity_set)
+            # Additive bonus: 0.30 per entity match, 0.08 per topic match
+            bonus = 0.30 * entity_matches + 0.08 * topic_matches
+            composite = r.score + bonus
+            total_matches = entity_matches + topic_matches
+            scored.append((r, composite, total_matches))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        any_with_kw = sum(1 for _, _, m in scored if m > 0)
+        if any_with_kw:
+            logger.info("Keyword rerank: %d/%d results contain query keywords",
+                        any_with_kw, len(scored))
+
+        return [
+            SearchResult(
+                file_path=r.file_path,
+                chunk_index=r.chunk_index,
+                text=r.text,
+                score=composite,
+                file_type=r.file_type,
+            )
+            for r, composite, _ in scored
+        ]
 
     def _multi_search(self, question: str, expanded_query: str,
                       top_k: int, file_type: str | None) -> list[SearchResult]:
@@ -294,7 +475,8 @@ class RAGEngine:
 
     def _expand_with_file_chunks(self, results: list,
                                   max_files: int = 5,
-                                  max_chunks: int = 40) -> list:
+                                  max_chunks: int = 40,
+                                  keyword_files: set[str] | None = None) -> list:
         """For the top-scoring unique files, fetch ALL their chunks.
 
         This ensures the LLM sees complete documents (e.g. all pages of a
@@ -304,6 +486,9 @@ class RAGEngine:
         File-type diversity: if multiple file types appear in the results,
         at least one slot is reserved for each non-dominant type so that
         rare documents (PDFs among millions of emails) get expanded.
+
+        When keyword_files is provided, those files get first priority
+        (they contain specific entities the user asked about).
         """
         if not results:
             return results
@@ -317,37 +502,51 @@ class RAGEngine:
             if r.file_path not in file_info or r.score > file_info[r.file_path]["score"]:
                 file_info[r.file_path] = {"score": r.score, "file_type": r.file_type}
 
-        # Count file types
-        type_counts: dict[str, int] = {}
-        for info in file_info.values():
-            type_counts[info["file_type"]] = type_counts.get(info["file_type"], 0) + 1
+        # --- Priority: keyword-matching files first ---
+        if keyword_files:
+            # Keyword files sorted by score, then non-keyword files
+            kw_sorted = sorted(
+                [fp for fp in file_info if fp in keyword_files],
+                key=lambda fp: file_info[fp]["score"], reverse=True,
+            )
+            non_kw_sorted = sorted(
+                [fp for fp in file_info if fp not in keyword_files],
+                key=lambda fp: file_info[fp]["score"], reverse=True,
+            )
+            expand_files = kw_sorted[:MAX_EXPAND_FILES]
+            remaining = MAX_EXPAND_FILES - len(expand_files)
+            if remaining > 0:
+                expand_files.extend(non_kw_sorted[:remaining])
+            logger.info("File expansion: %d keyword-priority + %d other files",
+                        min(len(kw_sorted), MAX_EXPAND_FILES), max(0, remaining))
+        else:
+            # No keyword priority — use file-type diversity logic
+            type_counts: dict[str, int] = {}
+            for info in file_info.values():
+                type_counts[info["file_type"]] = type_counts.get(info["file_type"], 0) + 1
 
-        # Separate files by dominant vs. diverse types
-        dominant_type = max(type_counts, key=type_counts.get) if type_counts else None
-        diverse_files = []  # non-dominant type files
-        dominant_files = []
+            dominant_type = max(type_counts, key=type_counts.get) if type_counts else None
+            diverse_files = []
+            dominant_files = []
 
-        for fp, info in sorted(file_info.items(), key=lambda x: x[1]["score"], reverse=True):
-            if info["file_type"] != dominant_type:
-                diverse_files.append(fp)
-            else:
-                dominant_files.append(fp)
+            for fp, info in sorted(file_info.items(), key=lambda x: x[1]["score"], reverse=True):
+                if info["file_type"] != dominant_type:
+                    diverse_files.append(fp)
+                else:
+                    dominant_files.append(fp)
 
-        # Build expansion list: prioritise diverse file types, fill rest with dominant
-        expand_files = []
-        # Reserve up to 3 slots for diverse files
-        diverse_slots = min(len(diverse_files), 3)
-        expand_files.extend(diverse_files[:diverse_slots])
-        remaining = MAX_EXPAND_FILES - len(expand_files)
-        expand_files.extend(dominant_files[:remaining])
+            expand_files = []
+            diverse_slots = min(len(diverse_files), 3)
+            expand_files.extend(diverse_files[:diverse_slots])
+            remaining = MAX_EXPAND_FILES - len(expand_files)
+            expand_files.extend(dominant_files[:remaining])
 
-        # If we still have room and more diverse files, add them
-        if len(expand_files) < MAX_EXPAND_FILES:
-            for fp in diverse_files[diverse_slots:]:
-                if fp not in expand_files:
-                    expand_files.append(fp)
-                    if len(expand_files) >= MAX_EXPAND_FILES:
-                        break
+            if len(expand_files) < MAX_EXPAND_FILES:
+                for fp in diverse_files[diverse_slots:]:
+                    if fp not in expand_files:
+                        expand_files.append(fp)
+                        if len(expand_files) >= MAX_EXPAND_FILES:
+                            break
 
         logger.info(
             "Expanding files: %s",
@@ -426,6 +625,21 @@ class RAGEngine:
         # Filter out system / internal files
         results = self._filter_system_files(results)
 
+        # --- Keyword-aware augmentation (focused queries) ---
+        # Semantic search can miss specific names/entities.  If "jill" is
+        # absent from ALL results for "what email for jill?", run targeted
+        # follow-up searches and re-rank so entity-matching results surface.
+        keywords = self._extract_query_keywords(question) if not broad else []
+        entity_keywords = self._extract_entity_keywords(question) if not broad else []
+        if keywords and not broad:
+            results = self._ensure_keyword_coverage(
+                results, question, keywords, top_k, file_type,
+                entity_keywords=entity_keywords or None,
+            )
+            results = self._keyword_rerank(
+                results, keywords, entity_keywords=entity_keywords or None,
+            )
+
         if not results:
             return {
                 "answer": "No relevant information found in your indexed files.",
@@ -440,10 +654,47 @@ class RAGEngine:
         if broad:
             results = self._select_broad_context(results, max_chunks=40)
         else:
-            results = self._expand_with_file_chunks(results)
+            # When entity keywords are present (specific names/products),
+            # prioritise files containing those entities for expansion.
+            # Use entity_keywords (e.g. "jill") NOT all keywords (e.g. "email")
+            # because generic terms match everything and defeat the purpose.
+            kw_files = None
+            priority_kws = entity_keywords or keywords
+            if priority_kws:
+                kw_files = set()
+                for r in results:
+                    searchable = (r.text + ' ' + r.file_path).lower()
+                    if any(kw in searchable for kw in priority_kws):
+                        kw_files.add(r.file_path)
+                if not kw_files:
+                    kw_files = None  # fall back to diversity logic
+                elif entity_keywords:
+                    logger.info("Entity-priority expansion: %d files match %s",
+                                len(kw_files), entity_keywords)
+            # For entity queries, expand more files (entity filter will trim
+            # the context anyway, so we want breadth across all entity files).
+            max_f = min(len(kw_files), 10) if kw_files and entity_keywords else 5
+            results = self._expand_with_file_chunks(
+                results, max_files=max_f, keyword_files=kw_files,
+            )
 
         # Filter again after expansion (may have re-introduced system files)
         results = self._filter_system_files(results)
+
+        # --- Entity-focused context filtering ---
+        # When the user asks about a specific entity ("jill", "bob"), the LLM
+        # context should focus on chunks that actually mention that entity.
+        # Without this, 30+ irrelevant files drown out the 3-5 relevant ones.
+        if entity_keywords and not broad:
+            entity_results = [
+                r for r in results
+                if any(kw in (r.text + ' ' + r.file_path).lower()
+                       for kw in entity_keywords)
+            ]
+            if entity_results:
+                logger.info("Entity context filter: %d -> %d results for %s",
+                            len(results), len(entity_results), entity_keywords)
+                results = entity_results
 
         # Build context from search results
         context = self._format_context(results)
