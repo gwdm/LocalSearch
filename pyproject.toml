@@ -16,6 +16,7 @@ dependencies = [
     "pytesseract>=0.3.10",
     "Pillow>=10.0.0",
     "ffmpeg-python>=0.2.0",
+    "extract-msg>=0.48.0",
     "ollama>=0.1.0",
     "click>=8.1.0",
     "pyyaml>=6.0",

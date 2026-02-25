@@ -112,6 +112,64 @@ class MetadataDB:
         """, (error, file_path))
         self._get_conn().commit()
 
+    # ------------------------------------------------------------------
+    # Batch operations (reduce SQLite commit overhead)
+    # ------------------------------------------------------------------
+
+    def upsert_files_batch(self, records: list[FileRecord]) -> None:
+        """Insert or update multiple file records in a single transaction."""
+        if not records:
+            return
+        conn = self._get_conn()
+        conn.executemany("""
+            INSERT INTO files (file_path, file_size, mtime, content_hash, status,
+                               indexed_at, chunk_count, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(file_path) DO UPDATE SET
+                file_size=excluded.file_size,
+                mtime=excluded.mtime,
+                content_hash=excluded.content_hash,
+                status=excluded.status,
+                indexed_at=excluded.indexed_at,
+                chunk_count=excluded.chunk_count,
+                error=excluded.error
+        """, [
+            (r.file_path, r.file_size, r.mtime, r.content_hash,
+             r.status, r.indexed_at, r.chunk_count, r.error)
+            for r in records
+        ])
+        conn.commit()
+
+    def mark_indexed_batch(self, updates: list[tuple[str, int]]) -> None:
+        """Mark multiple files as indexed in one transaction.
+
+        Args:
+            updates: List of ``(file_path, chunk_count)`` tuples.
+        """
+        if not updates:
+            return
+        now = time.time()
+        conn = self._get_conn()
+        conn.executemany("""
+            UPDATE files SET status='indexed', indexed_at=?, chunk_count=?, error=NULL
+            WHERE file_path=?
+        """, [(now, count, path) for path, count in updates])
+        conn.commit()
+
+    def mark_errors_batch(self, errors: list[tuple[str, str]]) -> None:
+        """Mark multiple files as errored in one transaction.
+
+        Args:
+            errors: List of ``(file_path, error_message)`` tuples.
+        """
+        if not errors:
+            return
+        conn = self._get_conn()
+        conn.executemany("""
+            UPDATE files SET status='error', error=? WHERE file_path=?
+        """, [(err, path) for path, err in errors])
+        conn.commit()
+
     def is_changed(self, file_path: str, file_size: int, mtime: float) -> bool:
         """Check if a file has changed since last indexing."""
         existing = self.get_file(file_path)
@@ -125,6 +183,13 @@ class MetadataDB:
         """Get all file paths currently tracked in the database."""
         rows = self._get_conn().execute(
             "SELECT file_path FROM files"
+        ).fetchall()
+        return {row["file_path"] for row in rows}
+
+    def get_indexed_paths(self) -> set[str]:
+        """Get file paths with status='indexed' only."""
+        rows = self._get_conn().execute(
+            "SELECT file_path FROM files WHERE status='indexed'"
         ).fetchall()
         return {row["file_path"] for row in rows}
 
@@ -160,10 +225,93 @@ class MetadataDB:
             "total_chunks": total_chunks,
         }
 
+    def get_pending_files(self, limit: int = 0) -> list[FileRecord]:
+        """Return file records with status='pending'.
+
+        Args:
+            limit: Maximum number of records to return (0 = no limit).
+        """
+        sql = "SELECT * FROM files WHERE status='pending'"
+        if limit > 0:
+            sql += f" LIMIT {limit}"
+        rows = self._get_conn().execute(sql).fetchall()
+        return [
+            FileRecord(
+                file_path=row["file_path"],
+                file_size=row["file_size"],
+                mtime=row["mtime"],
+                content_hash=row["content_hash"],
+                status=row["status"],
+                indexed_at=row["indexed_at"],
+                chunk_count=row["chunk_count"],
+                error=row["error"],
+            )
+            for row in rows
+        ]
+
     def clear(self) -> None:
         """Delete all records."""
         self._get_conn().execute("DELETE FROM files")
         self._get_conn().commit()
+
+    # ------------------------------------------------------------------
+    # Recovery / integrity
+    # ------------------------------------------------------------------
+
+    def check_integrity(self) -> tuple[bool, str]:
+        """Run SQLite integrity check.
+
+        Returns:
+            (ok, message) — ok is True when the DB passes.
+        """
+        try:
+            row = self._get_conn().execute("PRAGMA integrity_check").fetchone()
+            result = row[0] if row else "unknown"
+            return (result == "ok", result)
+        except Exception as e:
+            return (False, str(e))
+
+    def reset_stuck_processing(self) -> int:
+        """Move files stuck in 'processing' back to 'pending'.
+
+        After a crash the pipeline may leave files in 'processing'
+        state.  They will never be picked up again unless reset.
+
+        Returns:
+            Number of rows reset.
+        """
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE files SET status='pending', error=NULL "
+            "WHERE status='processing'"
+        )
+        conn.commit()
+        return cur.rowcount
+
+    def reset_errors(self) -> int:
+        """Move all 'error' files back to 'pending' so they are retried.
+
+        Returns:
+            Number of rows reset.
+        """
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE files SET status='pending', error=NULL "
+            "WHERE status='error'"
+        )
+        conn.commit()
+        return cur.rowcount
+
+    def get_indexed_file_paths_with_chunks(self) -> list[tuple[str, int]]:
+        """Return (file_path, chunk_count) for all indexed files."""
+        rows = self._get_conn().execute(
+            "SELECT file_path, chunk_count FROM files WHERE status='indexed'"
+        ).fetchall()
+        return [(row["file_path"], row["chunk_count"]) for row in rows]
+
+    def vacuum(self) -> None:
+        """Reclaim space and defragment the database."""
+        self._get_conn().execute("VACUUM")
 
     def close(self) -> None:
         """Close the database connection."""

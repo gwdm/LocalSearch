@@ -56,6 +56,23 @@ class QueryConfig:
 
 
 @dataclass
+class PipelineConfig:
+    cpu_workers: int = 4                 # Parallel worker processes for CPU extraction
+    extraction_timeout: int = 300        # Max seconds per file (CPU extraction)
+    gpu_timeout: int = 1800              # Max seconds per file (audio/video transcription)
+    embed_batch_size: int = 512          # Chunks to accumulate before embedding
+    type_max_mb: dict = field(default_factory=lambda: {
+        "text": 100,
+        "pdf": 500,
+        "docx": 200,
+        "image": 50,
+        "msg": 200,
+        "audio": 2000,
+        "video": 5000,
+    })
+
+
+@dataclass
 class ExtensionsConfig:
     text: list[str] = field(default_factory=lambda: [
         ".txt", ".md", ".csv", ".json", ".xml", ".html", ".log",
@@ -72,18 +89,19 @@ class ExtensionsConfig:
     image: list[str] = field(default_factory=lambda: [
         ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp",
     ])
+    msg: list[str] = field(default_factory=lambda: [".msg"])
 
     def all_extensions(self) -> set[str]:
         """Return all supported extensions as a set."""
         result: set[str] = set()
-        for ext_list in [self.text, self.pdf, self.docx, self.audio, self.video, self.image]:
+        for ext_list in [self.text, self.pdf, self.docx, self.audio, self.video, self.image, self.msg]:
             result.update(ext_list)
         return result
 
     def get_type(self, extension: str) -> Optional[str]:
         """Return the file type for a given extension."""
         ext = extension.lower()
-        for type_name in ["text", "pdf", "docx", "audio", "video", "image"]:
+        for type_name in ["text", "pdf", "docx", "audio", "video", "image", "msg"]:
             if ext in getattr(self, type_name):
                 return type_name
         return None
@@ -99,16 +117,25 @@ class Config:
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     scanner: ScannerConfig = field(default_factory=ScannerConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
     metadata_db: str = "localsearch_meta.db"
     log_level: str = "INFO"
 
 
 def _merge_dataclass(dc: object, data: dict) -> None:
-    """Update dataclass fields from a dict, ignoring unknown keys."""
+    """Update dataclass fields from a dict, ignoring unknown keys.
+
+    Dict fields are merged (updated) rather than replaced, so partial
+    overrides in YAML work correctly.
+    """
     for key, value in data.items():
         if hasattr(dc, key):
-            setattr(dc, key, value)
+            current = getattr(dc, key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                current.update(value)
+            else:
+                setattr(dc, key, value)
 
 
 def load_config(config_path: Optional[str] = None) -> Config:
@@ -140,7 +167,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
             cfg.log_level = data["log_level"]
 
         for section_name in ["qdrant", "ollama", "embedding", "whisper",
-                             "chunking", "scanner", "query", "extensions"]:
+                             "chunking", "scanner", "pipeline", "query",
+                             "extensions"]:
             if section_name in data and isinstance(data[section_name], dict):
                 _merge_dataclass(getattr(cfg, section_name), data[section_name])
 

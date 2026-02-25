@@ -2,8 +2,8 @@
 
 # Directories to scan for files
 scan_paths:
-  - "//NAS/shared"          # Synology SMB share (example)
-  # - "D:/Documents"        # Local directory (example)
+  - "D:/"                       # Local files for ingestion
+  # - "//blackhole/AI"          # Synology SMB share for vector DB
 
 # File extensions to process (grouped by type)
 extensions:
@@ -13,6 +13,7 @@ extensions:
   audio: [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".wma", ".aac"]
   video: [".mp4", ".avi", ".mkv", ".mov", ".webm", ".wmv", ".flv"]
   image: [".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"]
+  msg: [".msg"]
 
 # Qdrant vector database
 qdrant:
@@ -45,9 +46,24 @@ chunking:
 
 # Scanner
 scanner:
-  max_file_size_mb: 500       # Skip files larger than this
+  max_file_size_mb: 500        # Global hard cap (per-type limits below are tighter)
   use_content_hash: false     # Use mtime+size for change detection (faster)
   batch_size: 1000            # Files per processing batch
+
+# Pipeline processing
+pipeline:
+  cpu_workers: 8               # Parallel worker processes for CPU-bound extraction
+  extraction_timeout: 300      # Max seconds per file (CPU extraction)
+  gpu_timeout: 1800            # Max seconds per file (audio/video transcription)
+  embed_batch_size: 256        # Chunks to accumulate before embedding
+  type_max_mb:                 # Per-type file size limits (MB)
+    text: 100
+    pdf: 500
+    docx: 200
+    image: 50
+    msg: 200
+    audio: 2000
+    video: 5000
 
 # Query
 query:
@@ -55,7 +71,7 @@ query:
   score_threshold: 0.3        # Minimum similarity score
 
 # Metadata database
-metadata_db: "localsearch_meta.db"
+metadata_db: "data/localsearch_meta.db"
 
 # Logging
 log_level: "INFO"

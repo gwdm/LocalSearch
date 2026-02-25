@@ -22,6 +22,13 @@ class ScannedFile:
     extension: str
 
 
+EXCLUDED_DIRS = {
+    "$recycle.bin", "system volume information", "$windows.~bt",
+    "$windows.~ws", "windows", "recovery", ".git", "__pycache__",
+    "node_modules", ".venv", "venv",
+}
+
+
 class FileScanner:
     """Scans directories for files, detects changes against metadata DB."""
 
@@ -30,6 +37,9 @@ class FileScanner:
         self.metadb = metadb
         self.supported_extensions = config.extensions.all_extensions()
         self.max_file_size = config.scanner.max_file_size_mb * 1024 * 1024
+        self.excluded_dirs = EXCLUDED_DIRS | {
+            d.lower() for d in getattr(config.scanner, "exclude_dirs", [])
+        }
 
     def scan(self, paths: Optional[list[str]] = None) -> Generator[ScannedFile, None, None]:
         """Scan configured paths and yield new or changed files.
@@ -60,6 +70,8 @@ class FileScanner:
             for entry in os.scandir(root):
                 try:
                     if entry.is_dir(follow_symlinks=False):
+                        if entry.name.lower() in self.excluded_dirs:
+                            continue
                         yield from self._scan_directory(Path(entry.path))
                     elif entry.is_file(follow_symlinks=False):
                         scanned = self._check_file(entry)

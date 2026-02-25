@@ -52,6 +52,7 @@ def ingest(ctx, path):
     table.add_row("Files scanned", str(stats["scanned"]))
     table.add_row("Files processed", str(stats["processed"]))
     table.add_row("Chunks created", str(stats["chunks_created"]))
+    table.add_row("Skipped (size limit)", str(stats.get("skipped_size", 0)))
     table.add_row("Errors", str(stats["errors"]))
     table.add_row("Deleted files cleaned", str(stats["deleted"]))
     table.add_row("Elapsed time", f"{stats['elapsed_seconds']}s")
@@ -136,6 +137,16 @@ def status(ctx):
     table.add_row("Total chunks", str(stats["total_chunks"]))
     table.add_row("Vectors in Qdrant", str(stats["vector_count"]))
     console.print(table)
+
+
+@cli.command()
+@click.pass_context
+def dashboard(ctx):
+    """Open live GUI dashboard showing ingestion progress."""
+    from localsearch.dashboard import DashboardApp
+
+    app = DashboardApp(ctx.obj["config_path"])
+    app.run()
 
 
 @cli.command()
