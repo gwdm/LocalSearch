@@ -24,7 +24,7 @@ qdrant:
 # Ollama LLM
 ollama:
   host: "http://localhost:11434"
-  model: "qwen3:8b"
+  model: "qwen3:14b"
 
 # Embedding model
 embedding:
