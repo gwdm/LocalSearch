@@ -1,6 +1,7 @@
 """RAG: combine search results with Ollama LLM for natural language answers."""
 
 import logging
+import re
 
 from localsearch.config import Config
 from localsearch.query.search import SearchEngine, SearchResult
@@ -15,6 +16,7 @@ For ambiguous terms, prefer the interpretation most relevant to personal records
 - "passwords" / "logins" -> account credentials login password username
 - "receipts" / "orders" -> purchase confirmation order invoice payment receipt
 - "serial numbers" -> product key serial number registration code license
+- "software codes" / "license keys" -> software license key serial number product key activation code registration code OEM key CD key
 - "qualifications" / "grades" / "education" -> GCE O level A level GCSE degree certificate university exam results grade pass merit distinction BSc MSc diploma
 - "O levels" / "A levels" -> GCE ordinary level advanced level Cambridge London examination certificate subject grade
 Always include 5-10 specific search terms with synonyms. Return ONLY the search query, no explanation.
@@ -34,13 +36,65 @@ CRITICAL RULES:
 - For product keys/serial numbers: show the EXACT values.
 - Cite the source file path for each piece of information.
 - Do NOT add generic advice, tips, or "next steps" — only report what the files contain.
+- When creating a table: ONLY include rows with actual relevant data.
+  NEVER include rows with "Not applicable", "N/A", "No code found", or "Not a software code".
+  If a source file does not contain the requested information, OMIT it entirely from the table.
+- Do NOT list source files that have no relevant data.
+- Do NOT include internal system files, JSON configs, or database files — only list user documents.
+- Aim for COMPLETENESS: if the same type of information appears in many files, include ALL of them.
 
 Context:
 {context}
 
 Question: {question}
 
+REMINDER: If creating a table, include ONLY rows where you found actual data. OMIT any file that has no relevant information — do NOT write "Not applicable" or "N/A" in any cell. Only list files that contain the specific information requested.
+
 Answer:"""
+
+# --- Broad query detection ---
+BROAD_QUERY_PATTERNS = re.compile(
+    r'\b(find\s+(me\s+)?all|show\s+(me\s+)?all|list\s+(me\s+)?all|'
+    r'every\s+(single\s+)?\w+|all\s+(my|the)\b|everything|'
+    r'gather\s+(all|every))\b',
+    re.IGNORECASE,
+)
+
+# System / internal paths that should never appear in user search results
+SYSTEM_PATH_PATTERNS = re.compile(
+    r'(qdrant_data[\\/]|__pycache__|localsearch\.egg-info|node_modules|'
+    r'[\\/]\.git[\\/]|applied_seq\.json|collection_config\.json)',
+    re.IGNORECASE,
+)
+
+BROAD_EXPANSION_PROMPT = """You are generating search queries for a personal file archive to find ALL instances of something.
+Generate 5-8 DIFFERENT search queries. Each query should contain SPECIFIC WORDS AND PHRASES that would literally appear inside the documents, not just category labels.
+
+BAD example queries (too vague, match irrelevant files):
+- "software product keys"  (too broad, matches any product email)
+- "office license codes"  (too generic)
+
+GOOD example queries (contain words that appear in actual documents):
+- "License Key for your order serial number activation code"
+- "Your product key registration code CD key"
+- "Emailing Serials serial number key"  
+- "order confirmation license activation registration key"
+- "purchase software license key product information"
+
+For "find all software codes":
+  License Key for order number share-it registration
+  serial number activation code product key your license
+  Emailing Serials serial product key codes
+  Windows product key OEM key activation
+  registration code subscription license purchase
+  order confirmation software serial number activation code
+  CCleaner Diskeeper Paragon license key activation
+
+Each query on its own line. Return ONLY the queries.
+
+User question: {question}
+
+Search queries:"""
 
 
 class RAGEngine:
@@ -80,6 +134,47 @@ class RAGEngine:
         except Exception as e:
             logger.warning("Query expansion failed: %s", e)
         return question
+
+    def _is_broad_query(self, question: str) -> bool:
+        """Detect if the user wants a comprehensive sweep (find ALL, list everything, etc.)."""
+        return bool(BROAD_QUERY_PATTERNS.search(question))
+
+    def _expand_query_broad(self, question: str) -> list[str]:
+        """For broad queries, generate multiple search queries to cover different angles."""
+        client = self._get_client()
+        try:
+            response = client.chat(
+                model=self.config.ollama.model,
+                messages=[{"role": "user", "content": BROAD_EXPANSION_PROMPT.format(question=question)}],
+                options={"num_ctx": 1024, "num_predict": 300},
+                think=False,
+            )
+            text = response["message"]["content"].strip()
+            queries = []
+            for line in text.splitlines():
+                line = line.strip()
+                line = re.sub(r'^[\d]+[.)]\s*', '', line)
+                line = re.sub(r'^[-*\u2022]\s*', '', line)
+                line = line.strip('"\'\'`')
+                line = line.strip()
+                if line and 5 < len(line) < 500:
+                    queries.append(line)
+            if queries:
+                logger.info("Broad expansion: %d queries from '%s'", len(queries), question[:50])
+                for q in queries:
+                    logger.info("  -> %s", q)
+                return queries[:8]
+        except Exception as e:
+            logger.warning("Broad query expansion failed: %s", e)
+        return [self._expand_query(question)]
+
+    def _filter_system_files(self, results: list) -> list:
+        """Remove results from system/internal files that shouldn't appear in user searches."""
+        filtered = [r for r in results if not SYSTEM_PATH_PATTERNS.search(r.file_path)]
+        removed = len(results) - len(filtered)
+        if removed:
+            logger.info("Filtered out %d system-file results", removed)
+        return filtered
 
     def _multi_search(self, question: str, expanded_query: str,
                       top_k: int, file_type: str | None) -> list[SearchResult]:
@@ -133,7 +228,73 @@ class RAGEngine:
         results.sort(key=lambda r: r.score, reverse=True)
         return results
 
-    def _expand_with_file_chunks(self, results: list) -> list:
+    def _multi_search_broad(self, question: str, search_queries: list[str],
+                            top_k: int, file_type: str | None) -> list[SearchResult]:
+        """For broad queries, run MULTIPLE search passes with different query variants.
+
+        Each expanded query searches independently, then results are merged and
+        deduplicated.  Chunks that appear in results from MULTIPLE queries get
+        a score boost (cross-query reinforcement).
+        """
+        per_query_k = max(top_k // max(len(search_queries), 1), 20)
+        all_queries = search_queries + [question]
+
+        # Track (file, chunk) -> {best_score, hit_count, result_obj}
+        chunk_map: dict[tuple, dict] = {}
+
+        def _add(hits: list[SearchResult]):
+            for r in hits:
+                key = (r.file_path, r.chunk_index)
+                if key in chunk_map:
+                    chunk_map[key]["hit_count"] += 1
+                    if r.score > chunk_map[key]["best_score"]:
+                        chunk_map[key]["best_score"] = r.score
+                        chunk_map[key]["result"] = r
+                else:
+                    chunk_map[key] = {
+                        "best_score": r.score,
+                        "hit_count": 1,
+                        "result": r,
+                    }
+
+        # Run each expanded query
+        for query in all_queries:
+            _add(self.search_engine.search(query=query, top_k=per_query_k, file_type=file_type))
+
+        # File-type diversity: supplementary non-msg search for every query
+        if not file_type:
+            diversity_k = max(per_query_k, 15)
+            for query in all_queries:
+                _add(self.search_engine.search(
+                    query=query, top_k=diversity_k, file_type=file_type,
+                    exclude_file_types=["msg"],
+                ))
+
+        # Build result list with cross-query reinforcement scoring.
+        # Chunks matching multiple sub-queries are more likely to be relevant.
+        all_results: list[SearchResult] = []
+        for key, info in chunk_map.items():
+            r = info["result"]
+            # Boost score: 20% per additional query match
+            boosted_score = info["best_score"] * (1.0 + 0.2 * (info["hit_count"] - 1))
+            # Create new result with boosted score
+            all_results.append(SearchResult(
+                file_path=r.file_path,
+                chunk_index=r.chunk_index,
+                text=r.text,
+                score=min(boosted_score, 1.0),  # cap at 1.0
+                file_type=r.file_type,
+            ))
+
+        multi_hit = sum(1 for info in chunk_map.values() if info["hit_count"] > 1)
+        logger.info("Broad search: %d unique chunks from %d queries (%d multi-hit)",
+                    len(all_results), len(all_queries), multi_hit)
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        return all_results
+
+    def _expand_with_file_chunks(self, results: list,
+                                  max_files: int = 5,
+                                  max_chunks: int = 40) -> list:
         """For the top-scoring unique files, fetch ALL their chunks.
 
         This ensures the LLM sees complete documents (e.g. all pages of a
@@ -147,8 +308,8 @@ class RAGEngine:
         if not results:
             return results
 
-        MAX_EXPAND_FILES = 5
-        MAX_EXPAND_CHUNKS = 40
+        MAX_EXPAND_FILES = max_files
+        MAX_EXPAND_CHUNKS = max_chunks
 
         # Build per-file best score and file type
         file_info: dict[str, dict] = {}  # fp -> {score, file_type}
@@ -249,12 +410,21 @@ class RAGEngine:
             Dict with 'answer', 'sources', and 'search_results'.
         """
         top_k = top_k or self.config.query.top_k
+        broad = self._is_broad_query(question)
 
-        # Expand the query for better search results
-        search_query = self._expand_query(question)
+        if broad:
+            logger.info("Broad query detected: '%s'", question[:80])
+            effective_top_k = max(top_k * 4, 60)
+            search_queries = self._expand_query_broad(question)
+            results = self._multi_search_broad(
+                question, search_queries, effective_top_k, file_type,
+            )
+        else:
+            search_query = self._expand_query(question)
+            results = self._multi_search(question, search_query, top_k, file_type)
 
-        # Search with both expanded and original queries, merge results
-        results = self._multi_search(question, search_query, top_k, file_type)
+        # Filter out system / internal files
+        results = self._filter_system_files(results)
 
         if not results:
             return {
@@ -263,11 +433,23 @@ class RAGEngine:
                 "search_results": [],
             }
 
-        # Expand top files: fetch ALL chunks so LLM sees complete documents
-        results = self._expand_with_file_chunks(results)
+        # For broad queries: DON'T expand files (we want breadth across many
+        # files, not depth into a few).  Instead, deduplicate to best chunk
+        # per file and cap total chunks.
+        # For focused queries: expand top files so LLM sees complete documents.
+        if broad:
+            results = self._select_broad_context(results, max_chunks=40)
+        else:
+            results = self._expand_with_file_chunks(results)
+
+        # Filter again after expansion (may have re-introduced system files)
+        results = self._filter_system_files(results)
 
         # Build context from search results
         context = self._format_context(results)
+
+        # Use larger context window for broad queries with more chunks
+        num_ctx = 32768 if broad else 16384
 
         # Generate answer with Ollama
         prompt = RAG_PROMPT_TEMPLATE.format(context=context, question=question)
@@ -276,13 +458,16 @@ class RAGEngine:
         response = client.chat(
             model=self.config.ollama.model,
             messages=[{"role": "user", "content": prompt}],
-            options={"num_ctx": 16384},
+            options={"num_ctx": num_ctx},
             think=False,  # Disable qwen3 thinking mode for faster responses
         )
 
         answer = response["message"]["content"]
 
-        # Collect unique source files
+        # Post-process: strip "Not applicable" / "N/A" rows from tables
+        answer = self._clean_table_rows(answer)
+
+        # Collect unique source files — only from results that contributed to answer
         sources = list(dict.fromkeys(r.file_path for r in results))
 
         return {
@@ -298,6 +483,99 @@ class RAGEngine:
                 for r in results
             ],
         }
+
+    def _select_broad_context(self, results: list[SearchResult],
+                               max_chunks: int = 60) -> list[SearchResult]:
+        """For broad queries, select a diverse set of chunks across many files.
+
+        Instead of expanding files (depth), we want breadth: the best 2-3
+        chunks from each relevant file, capped at max_chunks total.
+        """
+        # Group by file, keep best chunks per file
+        file_chunks: dict[str, list[SearchResult]] = {}
+        for r in results:
+            file_chunks.setdefault(r.file_path, []).append(r)
+
+        # Sort each file's chunks by score descending
+        for fp in file_chunks:
+            file_chunks[fp].sort(key=lambda r: r.score, reverse=True)
+
+        # Sort files by their best chunk score
+        sorted_files = sorted(
+            file_chunks.keys(),
+            key=lambda fp: file_chunks[fp][0].score,
+            reverse=True,
+        )
+
+        # Round-robin: take best chunk from each file first, then second-best, etc.
+        selected: list[SearchResult] = []
+        seen: set = set()
+        max_per_file = 2  # at most 2 chunks per file for broad queries
+
+        for round_idx in range(max_per_file):
+            for fp in sorted_files:
+                chunks = file_chunks[fp]
+                if round_idx < len(chunks):
+                    c = chunks[round_idx]
+                    key = (c.file_path, c.chunk_index)
+                    if key not in seen:
+                        selected.append(c)
+                        seen.add(key)
+                if len(selected) >= max_chunks:
+                    break
+            if len(selected) >= max_chunks:
+                break
+
+        logger.info("Broad context: %d chunks from %d unique files",
+                    len(selected), len(set(r.file_path for r in selected)))
+        return selected
+
+    def _clean_table_rows(self, text: str) -> str:
+        """Remove table rows that contain 'Not applicable', 'N/A', or similar junk.
+
+        The LLM sometimes lists source files with no useful data.  This
+        post-processing step removes those rows so only real results remain.
+        """
+        junk_pattern = re.compile(
+            r'\|[^|]*(?:'
+            r'Not\s+applicable|N/?A|'
+            r'No\s+(?:code|key|serial|software|data)\s+found|'
+            r'Not\s+a\s+software\s+code|None\s+found|No\s+relevant|'
+            r'No\s+specific\s+\w+\s+(?:key|code|serial|license)|'
+            r'\(No\s+specific|'
+            r'not\s+visible\s+in\s+the\s+text|'
+            r'not\s+(?:fully\s+)?provided\s+in\s+the|'
+            r'(?:key|code)\s+provided\s+in\s+the\s+email\s+body|'
+            r'not\s+(?:fully\s+)?visible|'
+            r'requires?\s+further\s+inspection|'
+            r'does\s+not\s+constitute\s+proof|'
+            r'Note:\s+If\s+you\s+still\s+have|'
+            r'not\s+(?:a\s+)?(?:license|software|product)\s+(?:key|code)'
+            r')[^|]*\|',
+            re.IGNORECASE,
+        )
+        lines = text.split('\n')
+        cleaned = []
+        removed = 0
+        for line in lines:
+            if line.strip().startswith('|') and junk_pattern.search(line):
+                removed += 1
+                continue
+            cleaned.append(line)
+        if removed:
+            logger.info("Post-processing: removed %d N/A table rows", removed)
+        # Also strip trailing disclaimers about missing entries
+        result = '\n'.join(cleaned)
+        result = re.sub(
+            r'\n*(?:\*{0,2}(?:Note|Please note)\*{0,2}):?\s*.*(?:'
+            r'Not applicable|not contain|do not contain|'
+            r'no.*license|no.*key|no.*code|noted as such|'
+            r'not fully visible|further inspection|not visible|'
+            r'obscured|partially.*visible|only.*visible|only.*readable'
+            r').*$',
+            '', result, flags=re.IGNORECASE | re.DOTALL,
+        )
+        return result.rstrip()
 
     def _format_context(self, results: list[SearchResult]) -> str:
         """Format search results into context string for the LLM."""
