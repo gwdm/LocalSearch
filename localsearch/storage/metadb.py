@@ -52,7 +52,68 @@ class MetadataDB:
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_files_status ON files(status)
         """)
+        # Lightweight table for live ingest progress visible to the dashboard
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingest_status (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                phase TEXT NOT NULL DEFAULT 'idle',
+                dirs_visited INTEGER DEFAULT 0,
+                files_checked INTEGER DEFAULT 0,
+                files_new INTEGER DEFAULT 0,
+                files_queued INTEGER DEFAULT 0,
+                files_processed INTEGER DEFAULT 0,
+                files_errors INTEGER DEFAULT 0,
+                current_file TEXT DEFAULT '',
+                started_at REAL,
+                updated_at REAL
+            )
+        """)
+        # Seed the single row if it doesn't exist
+        conn.execute("""
+            INSERT OR IGNORE INTO ingest_status (id, phase) VALUES (1, 'idle')
+        """)
         conn.commit()
+
+    # ------------------------------------------------------------------
+    # Ingest progress tracking
+    # ------------------------------------------------------------------
+
+    def update_ingest_status(self, **kwargs) -> None:
+        """Update ingest progress fields.
+
+        Accepts any subset of: phase, dirs_visited, files_checked,
+        files_new, files_queued, files_processed, files_errors,
+        current_file, started_at.
+        The ``updated_at`` column is always set to now.
+        """
+        allowed = {
+            "phase", "dirs_visited", "files_checked", "files_new",
+            "files_queued", "files_processed", "files_errors",
+            "current_file", "started_at",
+        }
+        sets = []
+        vals = []
+        for key, val in kwargs.items():
+            if key not in allowed:
+                continue
+            sets.append(f"{key}=?")
+            vals.append(val)
+        if not sets:
+            return
+        sets.append("updated_at=?")
+        vals.append(time.time())
+        sql = f"UPDATE ingest_status SET {', '.join(sets)} WHERE id=1"
+        self._get_conn().execute(sql, vals)
+        self._get_conn().commit()
+
+    def get_ingest_status(self) -> dict:
+        """Return the current ingest status as a dict."""
+        row = self._get_conn().execute(
+            "SELECT * FROM ingest_status WHERE id=1"
+        ).fetchone()
+        if row is None:
+            return {"phase": "idle"}
+        return dict(row)
 
     def get_file(self, file_path: str) -> Optional[FileRecord]:
         """Get a file record by path."""

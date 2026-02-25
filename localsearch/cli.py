@@ -150,6 +150,34 @@ def dashboard(ctx):
 
 
 @cli.command()
+@click.option("--host", "-h", default="0.0.0.0", help="Bind address")
+@click.option("--port", "-p", default=8080, type=int, help="Port number")
+@click.option("--debug", is_flag=True, help="Enable Flask debug mode (dev only)")
+@click.pass_context
+def web(ctx, host, port, debug):
+    """Start the web UI (dashboard, search, chat)."""
+    cfg = load_config(ctx.obj["config_path"])
+    _setup_logging(cfg.log_level)
+
+    from localsearch.web.app import create_app
+
+    app = create_app(ctx.obj["config_path"])
+
+    if debug:
+        console.print(f"[bold yellow]Starting Flask dev server on {host}:{port}[/bold yellow]")
+        app.run(host=host, port=port, debug=True)
+    else:
+        console.print(f"[bold green]Starting LocalSearch web UI on http://{host}:{port}[/bold green]")
+        from werkzeug.serving import make_server
+        server = make_server(host, port, app, threaded=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            console.print("\n[bold]Shutting down...[/bold]")
+            server.shutdown()
+
+
+@cli.command()
 @click.confirmation_option(prompt="This will delete all indexed data. Are you sure?")
 @click.pass_context
 def reset(ctx):

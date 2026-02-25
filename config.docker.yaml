@@ -1,0 +1,70 @@
+# Docker config — paths remapped for container volumes
+# Mount your files at /scandata, SQLite at /data, Qdrant at its own container
+
+scan_paths:
+  - "/scandata"
+
+extensions:
+  text: [".txt", ".md", ".csv", ".json", ".xml", ".html", ".log", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".rst", ".tex"]
+  pdf: [".pdf"]
+  docx: [".docx"]
+  audio: [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".wma", ".aac"]
+  video: [".mp4", ".avi", ".mkv", ".mov", ".webm", ".wmv", ".flv"]
+  image: [".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"]
+  msg: [".msg"]
+
+qdrant:
+  host: "qdrant"            # Docker service name (not localhost)
+  port: 6333
+  collection: "localsearch"
+
+ollama:
+  host: "http://host.docker.internal:11434"   # Ollama running on host
+  model: "llama3"
+
+embedding:
+  model: "mixedbread-ai/mxbai-embed-large-v1"
+  batch_size: 64
+  device: "cuda"
+
+whisper:
+  model_size: "large-v3"
+  device: "cuda"
+  compute_type: "float16"
+  language: null
+
+chunking:
+  chunk_size: 1000
+  chunk_overlap: 200
+
+scanner:
+  max_file_size_mb: 500
+  use_content_hash: false
+  batch_size: 1000
+
+pipeline:
+  cpu_workers: 8
+  extraction_timeout: 300
+  gpu_timeout: 1800
+  embed_batch_size: 256
+  type_max_mb:
+    text: 100
+    pdf: 500
+    docx: 200
+    image: 50
+    msg: 200
+    audio: 2000
+    video: 5000
+
+query:
+  top_k: 10
+  score_threshold: 0.3
+
+metadata_db: "/data/localsearch_meta.db"
+
+# Translate container paths → host paths so the metadata DB stores
+# canonical Windows paths matching the local (non-Docker) ingest.
+path_map:
+  "/scandata": "D:\\"
+
+log_level: "INFO"

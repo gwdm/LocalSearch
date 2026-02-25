@@ -28,6 +28,7 @@ from localsearch.crawler.scanner import FileScanner, ScannedFile
 from localsearch.embedder import Embedder
 from localsearch.extractors.base import ExtractionError
 from localsearch.storage.metadb import FileRecord, MetadataDB
+from localsearch.storage.progress import write_progress
 from localsearch.storage.vectordb import VectorDB
 from localsearch.worker import extract_and_chunk, init_worker
 
@@ -229,6 +230,14 @@ class Pipeline:
         # Ensure Qdrant collection exists
         self.vectordb.ensure_collection(self.embedder.dimension)
 
+        # Mark ingest as started
+        write_progress(
+            self.config.metadata_db,
+            phase="scanning", started_at=start_time,
+            files_queued=0, files_processed=0, files_errors=0,
+            current_file="",
+        )
+
         # Start async upserter + async embedder
         upserter = AsyncUpserter(self.vectordb)
         upserter.start()
@@ -246,6 +255,11 @@ class Pipeline:
 
         for scanned_file in self.scanner.scan(paths):
             stats["scanned"] += 1
+            if stats["scanned"] % 10_000 == 0:
+                logger.info(
+                    "Pipeline scan: %d files queued so far (%d CPU, %d GPU)...",
+                    stats["scanned"], len(cpu_files), len(gpu_files),
+                )
 
             # Per-type file size guard
             type_limit_mb = pcfg.type_max_mb.get(
@@ -325,6 +339,13 @@ class Pipeline:
             "Scan complete: %d new (%d CPU-bound, %d GPU-bound, %d skipped-size, %d resumed)",
             stats["scanned"], len(cpu_files), len(gpu_files),
             stats["skipped_size"], resumed,
+        )
+
+        total_queued = len(cpu_files) + len(gpu_files)
+        write_progress(
+            self.config.metadata_db,
+            phase="processing", files_queued=total_queued,
+            files_processed=0, files_errors=0,
         )
 
         # Track previously-indexed paths so we only delete old vectors
@@ -407,6 +428,12 @@ class Pipeline:
                 flush_embeddings()
             if len(indexed_batch) + len(error_batch) >= METADB_FLUSH_INTERVAL:
                 flush_metadb()
+            # Update live progress
+            write_progress(
+                self.config.metadata_db,
+                files_processed=stats["processed"],
+                files_errors=stats["errors"],
+            )
 
         # ------------------------------------------------------------------
         # Phase 1: Parallel CPU extraction (ProcessPoolExecutor)
@@ -457,10 +484,20 @@ class Pipeline:
             deleted = self.scanner.find_deleted(paths)
             if deleted:
                 logger.info("Removing %d deleted files from index", len(deleted))
-                for file_path in deleted:
-                    self.vectordb.delete_by_file(file_path)
-                self.metadb.remove_files(deleted)
-                stats["deleted"] = len(deleted)
+                batch_size = 50
+                removed = []
+                for i in range(0, len(deleted), batch_size):
+                    batch = deleted[i:i + batch_size]
+                    for file_path in batch:
+                        try:
+                            self.vectordb.delete_by_file(file_path)
+                            removed.append(file_path)
+                        except Exception as e:
+                            logger.warning("Failed to delete vectors for %s: %s", file_path, e)
+                    logger.info("  Deleted %d/%d from vector DB", len(removed), len(deleted))
+                if removed:
+                    self.metadb.remove_files(removed)
+                stats["deleted"] = len(removed)
 
         stats["elapsed_seconds"] = round(time.time() - start_time, 1)
         logger.info(
@@ -468,6 +505,17 @@ class Pipeline:
             "%d skipped (size), %ss",
             stats["processed"], stats["errors"], stats["chunks_created"],
             stats["skipped_size"], stats["elapsed_seconds"],
+        )
+        self.metadb.update_ingest_status(
+            phase="idle",
+            files_processed=stats["processed"],
+            files_errors=stats["errors"],
+        )
+        write_progress(
+            self.config.metadata_db,
+            phase="idle",
+            files_processed=stats["processed"],
+            files_errors=stats["errors"],
         )
         return stats
 

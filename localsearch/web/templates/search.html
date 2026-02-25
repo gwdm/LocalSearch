@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Search - LocalSearch{% endblock %}
+
+{% block content %}
+<h1>Semantic Search</h1>
+
+<form id="search-form" class="search-bar">
+    <input type="text" id="query-input" placeholder="Search your files..." autofocus autocomplete="off">
+    <select id="file-type-filter">
+        <option value="">All types</option>
+        <option value="text">Text</option>
+        <option value="pdf">PDF</option>
+        <option value="docx">DOCX</option>
+        <option value="msg">Email (MSG)</option>
+        <option value="audio">Audio</option>
+        <option value="video">Video</option>
+        <option value="image">Image</option>
+    </select>
+    <button type="submit">Search</button>
+</form>
+
+<div id="search-status" class="muted"></div>
+<div id="results"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const form = document.getElementById('search-form');
+const input = document.getElementById('query-input');
+const filter = document.getElementById('file-type-filter');
+const status = document.getElementById('search-status');
+const resultsDiv = document.getElementById('results');
+
+form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const query = input.value.trim();
+    if (!query) return;
+
+    status.textContent = 'Searching...';
+    resultsDiv.innerHTML = '';
+
+    try {
+        const body = { query };
+        const ft = filter.value;
+        if (ft) body.file_type = ft;
+
+        const resp = await fetch('/api/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            status.textContent = `Error: ${data.error}`;
+            return;
+        }
+
+        const results = data.results || [];
+        status.textContent = `${results.length} result${results.length !== 1 ? 's' : ''} found`;
+
+        resultsDiv.innerHTML = results.map((r, i) => `
+            <div class="result-card">
+                <div class="result-header">
+                    <span class="result-num">${i + 1}.</span>
+                    <span class="result-file">${esc(r.file_name)}</span>
+                    <span class="result-badge">${esc(r.file_type)}</span>
+                    <span class="result-score">${(r.score * 100).toFixed(1)}%</span>
+                </div>
+                <div class="result-path">${esc(r.file_path)}</div>
+                <div class="result-text">${esc(r.text)}</div>
+            </div>
+        `).join('');
+
+    } catch (err) {
+        status.textContent = `Error: ${err.message}`;
+    }
+});
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+}
+</script>
+{% endblock %}

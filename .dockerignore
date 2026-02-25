@@ -1,0 +1,32 @@
+# Git/build artifacts
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist/
+build/
+
+# Data (mounted as volumes, not baked into image)
+data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Dev/test files
+tests/
+_*.py
+*.bat
+SESSION.md
+CONVERSATION_LOG.md
+DEVELOPMENT_HISTORY.md
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
