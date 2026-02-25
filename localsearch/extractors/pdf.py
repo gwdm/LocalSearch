@@ -23,15 +23,36 @@ class PDFExtractor(BaseExtractor):
                 text = page.get_text()
                 if text.strip():
                     pages.append(text)
-            doc.close()
 
             full_text = "\n\n".join(pages)
+
+            # Track whether OCR was used
+            ocr_was_used = False
+
+            # OCR fallback for image-only / scanned PDFs
             if not full_text.strip():
-                raise ExtractionError(f"No text extracted from PDF: {file_path}")
+                logger.debug("No text layer in %s, attempting OCR...", file_path)
+                ocr_was_used = True
+                pages = []
+                for page in doc:
+                    try:
+                        tp = page.get_textpage_ocr(tessdata="", full=True)
+                        text = page.get_text(textpage=tp)
+                        if text.strip():
+                            pages.append(text)
+                    except Exception as ocr_err:
+                        logger.debug("OCR failed on page %d of %s: %s",
+                                     page.number, file_path, ocr_err)
+                full_text = "\n\n".join(pages)
+
+            doc.close()
+
+            if not full_text.strip():
+                raise ExtractionError(f"No text extracted from PDF (even with OCR): {file_path}")
 
             return ExtractionResult(
                 text=full_text,
-                metadata={"page_count": len(pages)},
+                metadata={"page_count": len(pages), "ocr_used": ocr_was_used},
             )
         except ExtractionError:
             raise

@@ -28,73 +28,183 @@ class MsgExtractor(BaseExtractor):
                 "extract-msg not installed. Install with: pip install extract-msg"
             )
 
-        try:
-            msg = extract_msg.Message(file_path)
-        except Exception as e:
-            # Retry with latin-1 for files with unsupported code pages (e.g. 4093)
-            if "code page" in str(e).lower() or "codepage" in str(e).lower():
+        # Try extract_msg first (with encoding fallbacks), then olefile as last resort
+        result = self._try_extract_msg(extract_msg, file_path)
+        if result is not None:
+            return result
+
+        # All extract_msg attempts failed — use olefile fallback
+        result = self._try_extract_olefile(file_path)
+        if result is not None:
+            return result
+
+        raise ExtractionError(f"Failed to extract MSG file {file_path}: all methods exhausted")
+
+    def _try_extract_msg(self, extract_msg, file_path: str) -> ExtractionResult | None:
+        """Try to extract using extract_msg with encoding fallbacks.
+        Returns None if all attempts fail."""
+        encodings = [None] + self._FALLBACK_ENCODINGS  # None = default encoding
+
+        for enc in encodings:
+            try:
+                if enc is None:
+                    msg = extract_msg.Message(file_path)
+                else:
+                    msg = extract_msg.Message(file_path, overrideEncoding=enc)
+            except Exception:
+                continue
+
+            try:
+                result = self._read_msg_fields(msg, file_path)
+                if enc is not None:
+                    logger.debug("Extracted %s with fallback encoding %s", file_path, enc)
+                return result
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                # Body/header access failed with this encoding — try next
+                continue
+            except ExtractionError:
+                # No text at all — try next encoding, might decode body with another
+                continue
+            except Exception:
+                continue
+            finally:
                 try:
-                    msg = extract_msg.Message(file_path, overrideEncoding="latin-1")
-                    logger.debug("Retried %s with latin-1 encoding", file_path)
-                except Exception as e2:
-                    raise ExtractionError(f"Failed to open MSG file {file_path}: {e2}") from e2
-            else:
-                raise ExtractionError(f"Failed to open MSG file {file_path}: {e}") from e
+                    msg.close()
+                except Exception:
+                    pass
+
+        return None
+
+    def _try_extract_olefile(self, file_path: str) -> ExtractionResult | None:
+        """Fallback extraction using raw OLE property streams."""
+        try:
+            msg = self._open_via_olefile(file_path)
+        except Exception as e:
+            logger.debug("olefile fallback failed for %s: %s", file_path, e)
+            return None
 
         try:
-            parts = []
-
-            # Email headers
-            if msg.subject:
-                parts.append(f"Subject: {msg.subject}")
-            if msg.sender:
-                parts.append(f"From: {msg.sender}")
-            if msg.to:
-                parts.append(f"To: {msg.to}")
-            if msg.cc:
-                parts.append(f"CC: {msg.cc}")
-            if msg.date:
-                parts.append(f"Date: {msg.date}")
-
-            parts.append("")
-
-            # Email body
-            body = msg.body
-            if body:
-                parts.append(body)
-
-            # Process attachments
-            attachment_texts = []
-            attachment_names = []
-            for attachment in msg.attachments:
-                att_text = self._extract_attachment(attachment)
-                if att_text:
-                    att_name = getattr(attachment, "longFilename", None) or \
-                               getattr(attachment, "shortFilename", None) or "unnamed"
-                    attachment_names.append(att_name)
-                    attachment_texts.append(f"\n--- Attachment: {att_name} ---\n{att_text}")
-
-            if attachment_texts:
-                parts.append("\n".join(attachment_texts))
-
-            text = "\n".join(parts).strip()
-            if not text:
-                raise ExtractionError(f"No text extracted from MSG: {file_path}")
-
-            metadata = {
-                "subject": msg.subject or "",
-                "sender": msg.sender or "",
-                "date": str(msg.date or ""),
-                "attachment_count": len(msg.attachments),
-                "attachments_processed": len(attachment_texts),
-            }
-            if attachment_names:
-                metadata["attachment_names"] = ", ".join(attachment_names)
-
-            return ExtractionResult(text=text, metadata=metadata)
-
+            result = self._read_msg_fields(msg, file_path)
+            logger.debug("Extracted %s via olefile fallback", file_path)
+            return result
+        except Exception as e:
+            logger.debug("olefile field reading failed for %s: %s", file_path, e)
+            return None
         finally:
-            msg.close()
+            try:
+                msg.close()
+            except Exception:
+                pass
+
+    def _read_msg_fields(self, msg, file_path: str) -> ExtractionResult:
+        """Read email fields from a msg-like object and build an ExtractionResult."""
+        parts = []
+
+        # Email headers — wrap each access in try/except for encoding safety
+        for label, attr in [("Subject", "subject"), ("From", "sender"),
+                            ("To", "to"), ("CC", "cc"), ("Date", "date")]:
+            try:
+                val = getattr(msg, attr, None)
+                if val:
+                    parts.append(f"{label}: {val}")
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                pass  # skip undecodable header fields
+
+        parts.append("")
+
+        # Email body — this is where most encoding errors occur
+        body = msg.body  # may raise UnicodeDecodeError — let it propagate
+        if body:
+            parts.append(body)
+
+        # Process attachments
+        attachment_texts = []
+        attachment_names = []
+        for attachment in getattr(msg, "attachments", []):
+            att_text = self._extract_attachment(attachment)
+            if att_text:
+                att_name = getattr(attachment, "longFilename", None) or \
+                           getattr(attachment, "shortFilename", None) or "unnamed"
+                attachment_names.append(att_name)
+                attachment_texts.append(f"\n--- Attachment: {att_name} ---\n{att_text}")
+
+        if attachment_texts:
+            parts.append("\n".join(attachment_texts))
+
+        text = "\n".join(parts).strip()
+        if not text:
+            raise ExtractionError(f"No text extracted from MSG: {file_path}")
+
+        metadata = {
+            "subject": "",
+            "sender": "",
+            "date": "",
+            "attachment_count": len(getattr(msg, "attachments", [])),
+            "attachments_processed": len(attachment_texts),
+        }
+        # Safely populate metadata
+        for key, attr in [("subject", "subject"), ("sender", "sender"), ("date", "date")]:
+            try:
+                val = getattr(msg, attr, None)
+                metadata[key] = str(val) if val else ""
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                metadata[key] = "(encoding error)"
+        if attachment_names:
+            metadata["attachment_names"] = ", ".join(attachment_names)
+
+        return ExtractionResult(text=text, metadata=metadata)
+
+    # Encoding fallback chain for MSG files that fail with their declared code page
+    _FALLBACK_ENCODINGS = ["latin-1", "cp1252", "utf-8", "shift_jis", "gb2312", "euc_kr", "windows-950"]
+
+    def _open_via_olefile(self, file_path: str):
+        """Fallback: extract basic email fields directly from OLE compound file.
+
+        Returns a lightweight namespace object that mimics the extract_msg.Message
+        interface (subject, sender, to, cc, date, body, attachments, close).
+        """
+        import olefile
+
+        ole = olefile.OleFileIO(file_path)
+        try:
+            def _read_stream(name: str) -> str:
+                """Read a string property from the OLE stream."""
+                # Try Unicode stream first, then ASCII
+                for suffix in ("001F", "001E"):
+                    stream_name = f"__substg1.0_{name}{suffix}"
+                    if ole.exists(stream_name):
+                        raw = ole.openstream(stream_name).read()
+                        if suffix == "001F":
+                            return raw.decode("utf-16-le", errors="replace")
+                        else:
+                            return raw.decode("utf-8", errors="replace")
+                return ""
+
+            subject = _read_stream("0037")
+            sender  = _read_stream("0C1A") or _read_stream("0042")
+            to      = _read_stream("0E04")
+            cc      = _read_stream("0E03")
+            body    = _read_stream("1000")
+            date    = _read_stream("0039")
+
+            # Build a duck-typed object
+            class _OleMsg:
+                def __init__(self):
+                    self.subject = subject or None
+                    self.sender = sender or None
+                    self.to = to or None
+                    self.cc = cc or None
+                    self.date = date or None
+                    self.body = body or None
+                    self.attachments = []  # skip attachments in fallback mode
+                def close(self):
+                    ole.close()
+
+            logger.debug("Opened %s via olefile fallback", file_path)
+            return _OleMsg()
+        except Exception:
+            ole.close()
+            raise
 
     def _extract_attachment(self, attachment) -> str | None:
         """Extract text from an attachment by saving to temp and using the appropriate extractor.
@@ -155,8 +265,9 @@ class MsgExtractor(BaseExtractor):
             return None
         finally:
             try:
-                os.unlink(tmp_path)
-            except OSError:
+                if tmp_path:
+                    os.unlink(tmp_path)
+            except (OSError, UnboundLocalError):
                 pass
 
     def extract_embedded_msg(self, msg) -> str | None:
