@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - LocalSearch{% endblock %}
+
+{% block content %}
+<h1>Ingestion Dashboard</h1>
+<p class="subtitle" id="refresh-status">Auto-refresh: 10s</p>
+
+<div class="card-grid">
+    <div class="card">
+        <span class="card-label">Indexed</span>
+        <span class="card-value green" id="stat-indexed">{{ "{:,}".format(stats.indexed) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Pending</span>
+        <span class="card-value orange" id="stat-pending">{{ "{:,}".format(stats.pending) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Errors</span>
+        <span class="card-value red" id="stat-errors">{{ "{:,}".format(stats.errors) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Total Tracked</span>
+        <span class="card-value green" id="stat-total_files">{{ "{:,}".format(stats.total_files) }}</span>
+    </div>
+</div>
+
+<div class="card-grid card-grid-2">
+    <div class="card">
+        <span class="card-label">Total Chunks</span>
+        <span class="card-value green" id="stat-total_chunks">{{ "{:,}".format(stats.total_chunks) }}</span>
+    </div>
+    <div class="card">
+        <span class="card-label">Vectors in Qdrant</span>
+        <span class="card-value green" id="stat-vector_count">
+            {% if stats.vector_count is number %}{{ "{:,}".format(stats.vector_count) }}{% else %}{{ stats.vector_count }}{% endif %}
+        </span>
+    </div>
+</div>
+
+<div class="card wide">
+    <span class="card-label">Last Processed File</span>
+    <span class="card-mono" id="stat-last_file">{{ stats.last_file }}</span>
+</div>
+
+<div class="card wide">
+    <span class="card-label">Recent Errors</span>
+    <div class="error-list" id="error-list">
+        {% for err in stats.recent_errors %}
+        <div class="error-row">
+            <span class="error-file">{{ err.file }}</span>
+            <span class="error-msg">{{ err.error }}</span>
+        </div>
+        {% else %}
+        <span class="muted">No recent errors</span>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refreshStats() {
+    try {
+        const resp = await fetch('/api/stats');
+        const s = resp.ok ? await resp.json() : null;
+        if (!s) return;
+
+        document.getElementById('stat-indexed').textContent = Number(s.indexed).toLocaleString();
+        document.getElementById('stat-pending').textContent = Number(s.pending).toLocaleString();
+        document.getElementById('stat-errors').textContent = Number(s.errors).toLocaleString();
+        document.getElementById('stat-total_files').textContent = Number(s.total_files).toLocaleString();
+        document.getElementById('stat-total_chunks').textContent = Number(s.total_chunks).toLocaleString();
+        const vc = typeof s.vector_count === 'number' ? Number(s.vector_count).toLocaleString() : s.vector_count;
+        document.getElementById('stat-vector_count').textContent = vc;
+        document.getElementById('stat-last_file').textContent = s.last_file;
+
+        const el = document.getElementById('error-list');
+        if (s.recent_errors && s.recent_errors.length) {
+            el.innerHTML = s.recent_errors.map(e =>
+                `<div class="error-row"><span class="error-file">${esc(e.file)}</span><span class="error-msg">${esc(e.error)}</span></div>`
+            ).join('');
+        } else {
+            el.innerHTML = '<span class="muted">No recent errors</span>';
+        }
+
+        const now = new Date().toLocaleTimeString();
+        document.getElementById('refresh-status').textContent = `Last refresh: ${now}  |  Auto-refresh: 10s`;
+    } catch (err) {
+        console.error('Stats refresh failed:', err);
+    }
+}
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+setInterval(refreshStats, 10000);
+</script>
+{% endblock %}
