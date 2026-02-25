@@ -1,6 +1,7 @@
 version: "3.8"
 
 services:
+  # ---------- Vector database ----------
   qdrant:
     image: qdrant/qdrant:latest
     container_name: localsearch-qdrant
@@ -12,3 +13,43 @@ services:
     restart: unless-stopped
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
+
+  # ---------- LocalSearch (ingest + web UI) ----------
+  localsearch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: localsearch-app
+    depends_on:
+      - qdrant
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount your files to scan (read-only is safest)
+      - D:/:/scandata:ro
+      # Persistent SQLite metadata database
+      - localsearch_data:/data
+      # Model cache (avoids re-downloading on rebuild)
+      - model_cache:/root/.cache
+    environment:
+      - LOCALSEARCH_CONFIG=/app/config.docker.yaml
+      - NVIDIA_VISIBLE_DEVICES=all
+    restart: unless-stopped
+    # GPU access via NVIDIA Container Toolkit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Default: run ingest loop + web UI together
+    # Override with: docker compose run localsearch ingest
+    #                docker compose run localsearch web
+    command: ["both"]
+
+volumes:
+  localsearch_data:
+    name: localsearch_data
+  model_cache:
+    name: localsearch_model_cache
