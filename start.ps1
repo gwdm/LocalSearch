@@ -42,6 +42,26 @@ $Python = Join-Path $env:USERPROFILE "Miniconda3\envs\312\python.exe"
 
 function Write-Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 
+# ── Step 0: Wait for Docker daemon ───────────────────────────────────────
+Write-Step "Waiting for Docker daemon"
+$dockerReady = $false
+for ($i = 0; $i -lt 60; $i++) {
+    try {
+        $null = docker info 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Docker ready after $($i * 5)s" -ForegroundColor Green
+            $dockerReady = $true
+            break
+        }
+    } catch { }
+    if ($i % 6 -eq 0) { Write-Host "  $($i * 5)s ..." -ForegroundColor DarkGray }
+    Start-Sleep -Seconds 5
+}
+if (-not $dockerReady) {
+    Write-Host "ERROR: Docker daemon not available after 300s" -ForegroundColor Red
+    exit 1
+}
+
 # ── Step 1: Warm page cache ──────────────────────────────────────────────
 if (-not $SkipWarm) {
     Write-Step "Warming Qdrant page cache"
