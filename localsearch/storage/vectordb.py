@@ -87,7 +87,8 @@ class VectorDB:
 
     def search(self, query_vector: list[float], top_k: int = 10,
                score_threshold: float = 0.0,
-               filters: Optional[dict] = None) -> list[dict]:
+               filters: Optional[dict] = None,
+               exclude_file_types: Optional[list[str]] = None) -> list[dict]:
         """Search for similar vectors.
 
         Args:
@@ -95,20 +96,33 @@ class VectorDB:
             top_k: Number of results to return.
             score_threshold: Minimum similarity score.
             filters: Optional Qdrant filter conditions.
+            exclude_file_types: Optional list of file_type values to exclude.
 
         Returns:
             List of dicts with 'score', 'payload', and 'id' keys.
         """
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 
         client = self._get_client()
 
-        qdrant_filter = None
+        must_conditions = []
+        must_not_conditions = []
+
         if filters:
-            conditions = []
             for key, value in filters.items():
-                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
-            qdrant_filter = Filter(must=conditions)
+                must_conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+
+        if exclude_file_types:
+            must_not_conditions.append(
+                FieldCondition(key="file_type", match=MatchAny(any=exclude_file_types))
+            )
+
+        qdrant_filter = None
+        if must_conditions or must_not_conditions:
+            qdrant_filter = Filter(
+                must=must_conditions or None,
+                must_not=must_not_conditions or None,
+            )
 
         results = client.query_points(
             collection_name=self.collection,
@@ -125,6 +139,38 @@ class VectorDB:
                 "payload": hit.payload,
             }
             for hit in results.points
+        ]
+
+    def get_chunks_by_files(self, file_paths: list[str], limit: int = 100) -> list[dict]:
+        """Retrieve all chunks for the given file paths.
+
+        Args:
+            file_paths: List of file paths to retrieve chunks for.
+            limit: Maximum chunks to return per file.
+
+        Returns:
+            List of dicts with 'payload' keys, sorted by file_path and chunk_index.
+        """
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        client = self._get_client()
+        conditions = [
+            FieldCondition(key="file_path", match=MatchValue(value=fp))
+            for fp in file_paths
+        ]
+        results, _ = client.scroll(
+            collection_name=self.collection,
+            scroll_filter=Filter(should=conditions),
+            limit=limit * len(file_paths),
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [
+            {"payload": point.payload}
+            for point in sorted(
+                results,
+                key=lambda p: (p.payload.get("file_path", ""), p.payload.get("chunk_index", 0)),
+            )
         ]
 
     def delete_by_file(self, file_path: str) -> None:

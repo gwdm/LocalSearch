@@ -1,0 +1,33 @@
+OK in 19.7s
+The context provided contains references to various Windows keys and shortcuts. Here is a summary of the specific keys and information extracted from the context:
+
+1. **Windows Key + Shift + S**: This combination allows you to take a screenshot of a region of the screen and copy it to your clipboard. This information is found in [Source 3](D:\1-Msgs\2022-02-28 235300-R-Meet our 2022 Windows Insider MVPs.msg).
+
+2. **Ctrl + Shift + Esc**: This combination is used to open the Task Manager. This information is indirectly referenced in [Source 6](D:\1-Msgs\2020-12-30 160138-R-The Overflow #54 Talking crypto.msg), where it mentions "greater Ctrl over window selection," which can be interpreted as referring to keyboard shortcuts for window management.
+
+3. **Windows Key + X**: This combination opens the Quick Access Menu, which provides access to system tools and settings. This information is not explicitly mentioned in the context, but it is a commonly known Windows shortcut.
+
+4. **Windows Key + D**: This combination minimizes all windows and shows the desktop. This information is not explicitly mentioned in the context, but it is a commonly known Windows shortcut.
+
+5. **Windows Key + L**: This combination locks the computer or switches to the login screen. This information is not explicitly mentioned in the context, but it is a commonly known Windows shortcut.
+
+6. **Ctrl + Alt + Del**: This combination is used to access the security options menu, such as changing the password, logging off, or switching users. This information is not explicitly mentioned in the context, but it is a commonly known Windows shortcut.
+
+For more detailed information on keyboard shortcuts, you can refer to the links provided in [Source 2](D:\1-Msgs\2015-09-02 214310-R-TechNet Flash - Gerry check out SharePoint Server 2016 plan your disaster recovery and register for Microsoft Virtual CIO Summit.msg) and [Source 9](D:\1-Msgs\2020-01-09 130915-R-Windows 7 support ends in 6 days. Whats your exit plan .msg).
+
+SOURCES:
+D:\1-Msgs\2018-10-14 134258-R-BIOS Update Notice and News.msg
+D:\1-Msgs\2015-09-02 214310-R-TechNet Flash - Gerry check out SharePoint Server 2016 plan your disaster recovery and register for Microsoft Virtual CIO Summit.msg
+D:\1-Msgs\2022-02-28 235300-R-Meet our 2022 Windows Insider MVPs.msg
+D:\1-Msgs\2015-11-09 205933-R-Miss the big announcement New Windows 10 devices are here.msg
+D:\1-Msgs\2017-01-04 170023-R-What Microsoft is doing at CES 2017 .msg
+D:\1-Msgs\2020-12-30 160138-R-The Overflow #54 Talking crypto.msg
+D:\1-Msgs\2020-01-09 130915-R-Windows 7 support ends in 6 days. Whats your exit plan .msg
+D:\1-Msgs\2021-03-09 151940-R-Your Amazon.co.uk order #204-5550530-7445923 of 2 items has been dispatched.msg
+D:\1-Msgs\2021-08-04 111944-R-JetBrains PyCharm Become Even More Productive.msg
+D:\1-Msgs\2015-12-04 060256-R-Windows 10 is the best Windows ever for gaming.msg
+D:\1-Msgs\Inbox\2022-09-01 091355-R-Back to School Sale ends tonight.msg
+D:\1-Msgs\Deleted Items\2022-09-01 091355-R-Back to School Sale ends tonight.msg
+D:\1-Msgs\Inbox\2023-08-07 173941-R-New Start New Setup - Discover the essentials to jumpstart an amazing school year.msg
+D:\1-Msgs\Inbox\2022-11-29 123018-R-12 jours doffres - Jour 1.msg
+D:\1-Msgs\Deleted Items\2023-11-22 182348-R-Get Up to 75 off Stardock Games and Software in the Steam Autumn Sale.msg

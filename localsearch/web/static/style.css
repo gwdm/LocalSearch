@@ -274,9 +274,18 @@ h1 {
     font-size: 0.78rem;
     color: var(--overlay0);
 }
+.chat-sources summary { cursor: pointer; color: var(--subtext0); font-size: 0.78rem; }
+.chat-sources summary:hover { color: var(--text); }
 .chat-sources ul { list-style: none; margin-top: 0.25rem; }
 .chat-sources li { font-family: 'Consolas', monospace; font-size: 0.72rem; padding: 0.1rem 0; word-break: break-all; }
 .chat-sources li::before { content: "→ "; color: var(--blue); }
+
+.chat-answer { line-height: 1.6; }
+.chat-answer p { margin-bottom: 0.5rem; }
+.chat-answer ul, .chat-answer ol { margin: 0.4rem 0 0.4rem 1.2rem; }
+.chat-answer li { margin-bottom: 0.25rem; }
+.chat-answer strong { color: var(--yellow); }
+.chat-answer code { background: var(--surface1); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.88em; }
 
 .chat-input-bar {
     display: flex;

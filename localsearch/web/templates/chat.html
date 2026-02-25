@@ -68,13 +68,13 @@ chatForm.addEventListener('submit', async (e) => {
         if (data.error) {
             appendMessage('assistant', `<span class="red">Error: ${esc(data.error)}</span>`, true);
         } else {
-            let html = `<p>${esc(data.answer).replace(/\n/g, '<br>')}</p>`;
+            let html = '<div class="chat-answer">' + renderMarkdown(data.answer || '(no answer)') + '</div>';
             if (data.sources && data.sources.length) {
-                html += '<div class="chat-sources"><strong>Sources:</strong><ul>';
+                html += '<details class="chat-sources"><summary>Sources (' + data.sources.length + ' files)</summary><ul>';
                 data.sources.forEach(s => {
                     html += `<li>${esc(s)}</li>`;
                 });
-                html += '</ul></div>';
+                html += '</ul></details>';
             }
             appendMessage('assistant', html, true);
         }
@@ -111,6 +111,32 @@ function esc(s) {
     const d = document.createElement('div');
     d.textContent = s || '';
     return d.innerHTML;
+}
+
+function renderMarkdown(text) {
+    // Simple markdown renderer for LLM output
+    let html = esc(text);
+    // Bold: **text**
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Italic: *text*
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Inline code: `text`
+    html = html.replace(/`(.+?)`/g, '<code>$1</code>');
+    // Numbered lists: lines starting with "1. ", "2. ", etc
+    html = html.replace(/^(\d+)\.\s+(.*)$/gm, '<li>$2</li>');
+    // Bullet lists: lines starting with "- "
+    html = html.replace(/^[-•]\s+(.*)$/gm, '<li>$1</li>');
+    // Wrap consecutive <li> in <ol> or <ul>
+    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+    // Paragraphs: double newlines
+    html = html.replace(/\n\n/g, '</p><p>');
+    // Single newlines to <br>
+    html = html.replace(/\n/g, '<br>');
+    // Wrap in paragraph
+    html = '<p>' + html + '</p>';
+    // Clean up empty paragraphs
+    html = html.replace(/<p>\s*<\/p>/g, '');
+    return html;
 }
 </script>
 {% endblock %}

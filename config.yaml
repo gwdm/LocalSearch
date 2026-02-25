@@ -24,7 +24,7 @@ qdrant:
 # Ollama LLM
 ollama:
   host: "http://localhost:11434"
-  model: "llama3"
+  model: "qwen3:8b"
 
 # Embedding model
 embedding:
@@ -67,7 +67,7 @@ pipeline:
 
 # Query
 query:
-  top_k: 10                   # Number of results to return
+  top_k: 15                   # Number of results to return
   score_threshold: 0.3        # Minimum similarity score
 
 # Metadata database

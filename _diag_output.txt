@@ -1,0 +1,31 @@
+=== RAG Pipeline Diagnostic ===
+
+Step 1: Load config
+  OK: load_config in 0.0s
+
+Step 2: Create embedder
+  OK: Embedder init in 0.1s
+
+Step 3: Embed query
+  OK: embed_query in 6.1s
+  Vector dim: 1024
+
+Step 4: Qdrant search
+  OK: Qdrant search in 0.9s
+  Got 10 results
+    [0.793] D:\1-Msgs\2012-11-22 085400-R-Emailing Serials.txt.msg
+    [0.793] D:\1-Msgs\2012-11-22 085406-R-Emailing Serials.txt.msg
+    [0.793] D:\1-Msgs\2012-11-22 194609-R-FW Emailing Serials.txt.msg
+
+Step 5: Ollama chat
+  OK: Ollama chat in 0.4s
+  Response: Hello!
+
+Step 6: Full RAG (already tested components work)
+  OK: Full RAG in 3.5s
+  Answer: The context provided does not contain any specific Windows product keys. However, in Source 3, there is a mention of a product key "QEU-NGT-88X" which appears to be related to Windows activation. 
+
+Answer: QEU-NGT-88X (Source: D:\1-Msgs\2017-06-06 095704-R-Product activation.msg)
+  Sources: 8
+
+=== Done ===

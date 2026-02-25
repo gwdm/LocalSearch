@@ -22,7 +22,9 @@ from localsearch.storage.progress import read_progress
 logger = logging.getLogger(__name__)
 
 # Module-level singletons (lazy-loaded, thread-safe)
-_lock = threading.Lock()
+# NOTE: Must use RLock (reentrant) because _get_rag_engine -> _get_search_engine
+#       both acquire the same lock, and threading.Lock would deadlock.
+_lock = threading.RLock()
 _search_engine = None
 _rag_engine = None
 _config: Config | None = None
@@ -41,7 +43,9 @@ def _get_search_engine():
         with _lock:
             if _search_engine is None:
                 from localsearch.query.search import SearchEngine
+                logger.info("Initializing SearchEngine (embedding model load)...")
                 _search_engine = SearchEngine(_get_config())
+                logger.info("SearchEngine ready")
     return _search_engine
 
 
@@ -51,7 +55,9 @@ def _get_rag_engine():
         with _lock:
             if _rag_engine is None:
                 from localsearch.query.rag import RAGEngine
+                logger.info("Initializing RAGEngine...")
                 _rag_engine = RAGEngine(_get_config(), _get_search_engine())
+                logger.info("RAGEngine ready")
     return _rag_engine
 
 
@@ -124,6 +130,14 @@ def create_app(config_path: str | None = None) -> Flask:
     """Application factory."""
     global _config
     _config = load_config(config_path)
+
+    # Pre-warm the search and RAG engines (loads embedding model to GPU)
+    # so the first request doesn't have a long cold-start delay.
+    logger.info("Pre-warming search engine (loading embedding model)...")
+    _get_search_engine()
+    logger.info("Pre-warming RAG engine...")
+    _get_rag_engine()
+    logger.info("Engines ready")
 
     app = Flask(
         __name__,
