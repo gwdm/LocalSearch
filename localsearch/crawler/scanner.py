@@ -327,6 +327,14 @@ class FileScanner:
             if not root.exists():
                 logger.warning("Scan path does not exist: %s", scan_path)
                 continue
+            if root.is_file():
+                # Single file passed via -p flag
+                sf = self._check_single_file(root)
+                if sf is not None:
+                    self._scan_files_checked += 1
+                    self._scan_files_yielded += 1
+                    yield sf
+                continue
             if not root.is_dir():
                 logger.warning("Scan path is not a directory: %s", scan_path)
                 continue
@@ -393,6 +401,39 @@ class FileScanner:
             logger.debug("Permission denied: %s", root)
         except OSError as e:
             logger.debug("OS error scanning directory %s: %s", root, e)
+
+    def _check_single_file(self, path: Path) -> Optional[ScannedFile]:
+        """Check a single file path (for -p flag with a file instead of dir)."""
+        ext = path.suffix.lower()
+        if ext not in self.supported_extensions:
+            return None
+
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+
+        if stat.st_size == 0:
+            return None
+        if stat.st_size > self.max_file_size:
+            return None
+
+        file_path = self.translate_path(str(path.resolve()))
+
+        if not self.metadb.is_changed(file_path, stat.st_size, stat.st_mtime):
+            return None
+
+        file_type = self.config.extensions.get_type(ext)
+        if file_type is None:
+            return None
+
+        return ScannedFile(
+            path=file_path,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+            file_type=file_type,
+            extension=ext,
+        )
 
     def _check_file(self, entry: os.DirEntry) -> Optional[ScannedFile]:
         """Check if a file should be processed."""

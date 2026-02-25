@@ -301,10 +301,13 @@ class Pipeline:
 
         # ------------------------------------------------------------
         # Resume pending files from previous interrupted runs
+        # (only when doing a full ingest, not a scoped -p run)
         # ------------------------------------------------------------
         already_queued = {sf.path for sf in cpu_files} | {sf.path for sf in gpu_files}
         resumed = 0
-        for rec in self.metadb.get_pending_files():
+        if paths:
+            logger.info("Scoped ingest (-p): skipping pending-file resume")
+        for rec in ([] if paths else self.metadb.get_pending_files()):
             if rec.file_path in already_queued:
                 continue
             ext = Path(rec.file_path).suffix
