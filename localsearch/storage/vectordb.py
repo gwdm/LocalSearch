@@ -25,12 +25,14 @@ class VectorDB:
                 raise RuntimeError(
                     "qdrant-client not installed. Install with: pip install qdrant-client"
                 )
-            self._client = QdrantClient(host=self.host, port=self.port)
+            self._client = QdrantClient(
+                host=self.host, port=self.port, timeout=120,
+            )
         return self._client
 
     def ensure_collection(self, vector_size: int) -> None:
         """Create the collection if it doesn't exist."""
-        from qdrant_client.models import Distance, VectorParams
+        from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
 
         client = self._get_client()
         collections = [c.name for c in client.get_collections().collections]
@@ -44,8 +46,17 @@ class VectorDB:
                     distance=Distance.COSINE,
                 ),
             )
-        else:
-            logger.debug("Collection '%s' already exists", self.collection)
+
+        # Ensure payload index on file_path for fast filtered deletes
+        info = client.get_collection(self.collection)
+        if not info.payload_schema or "file_path" not in info.payload_schema:
+            logger.info("Creating payload index on 'file_path'")
+            client.create_payload_index(
+                collection_name=self.collection,
+                field_name="file_path",
+                field_schema=PayloadSchemaType.KEYWORD,
+                wait=False,
+            )
 
     def upsert(self, vectors: list[list[float]], payloads: list[dict],
                ids: Optional[list[str]] = None) -> None:

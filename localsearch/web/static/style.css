@@ -108,6 +108,48 @@ h1 {
 .card-value.red    { color: var(--red); }
 .card-mono { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.8rem; color: var(--text); word-break: break-all; }
 
+/* -- Ingest progress banner -- */
+.ingest-banner {
+    background: var(--surface0);
+    border: 1px solid var(--surface1);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+}
+.ingest-phase {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--teal);
+    margin-bottom: 0.25rem;
+}
+.ingest-details {
+    font-size: 0.85rem;
+    color: var(--subtext0);
+    margin-bottom: 0.4rem;
+}
+.ingest-bar-wrap {
+    background: var(--surface1);
+    border-radius: 4px;
+    height: 6px;
+    overflow: hidden;
+}
+.ingest-bar {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+.ingest-bar.scanning {
+    background: var(--teal);
+    animation: pulse-bar 1.5s ease-in-out infinite;
+}
+.ingest-bar.processing {
+    background: var(--green);
+}
+@keyframes pulse-bar {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
 /* -- Errors list -- */
 .error-list { font-size: 0.8rem; max-height: 180px; overflow-y: auto; }
 .error-row { display: flex; gap: 0.75rem; padding: 0.25rem 0; border-bottom: 1px solid var(--surface1); }

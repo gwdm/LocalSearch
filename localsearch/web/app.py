@@ -17,6 +17,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 
 from localsearch.config import Config, load_config
+from localsearch.storage.progress import read_progress
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ def _get_stats() -> dict:
         "total_files": 0, "indexed": 0, "pending": 0,
         "errors": 0, "total_chunks": 0, "vector_count": "?",
         "last_file": "--", "recent_errors": [],
+        "ingest": {"phase": "idle"},
     }
 
     db_path = cfg.metadata_db
@@ -103,6 +105,9 @@ def _get_stats() -> dict:
         conn.close()
     except Exception as exc:
         logger.warning("Failed to read metadb: %s", exc)
+
+    # Live ingest progress (JSON file — works across Docker bind mounts)
+    stats["ingest"] = read_progress(db_path)
 
     try:
         from qdrant_client import QdrantClient

@@ -34,4 +34,6 @@ htmlcov/
 # Logs
 *.log
 
+# Runtime data
 data/
+ingest_progress.json

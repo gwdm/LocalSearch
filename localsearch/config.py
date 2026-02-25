@@ -47,6 +47,7 @@ class ScannerConfig:
     max_file_size_mb: int = 500
     use_content_hash: bool = False
     batch_size: int = 1000
+    use_usn_journal: bool = True   # Use NTFS change journal for fast repeat scans (Windows only)
 
 
 @dataclass
@@ -121,6 +122,9 @@ class Config:
     query: QueryConfig = field(default_factory=QueryConfig)
     metadata_db: str = "localsearch_meta.db"
     log_level: str = "INFO"
+    # Map container paths → host paths so Docker ingest stores canonical paths
+    # e.g. {"/scandata": "D:\\"} translates /scandata/foo → D:\foo
+    path_map: dict[str, str] = field(default_factory=dict)
 
 
 def _merge_dataclass(dc: object, data: dict) -> None:
@@ -165,6 +169,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
             cfg.metadata_db = data["metadata_db"]
         if "log_level" in data:
             cfg.log_level = data["log_level"]
+        if "path_map" in data and isinstance(data["path_map"], dict):
+            cfg.path_map = data["path_map"]
 
         for section_name in ["qdrant", "ollama", "embedding", "whisper",
                              "chunking", "scanner", "pipeline", "query",

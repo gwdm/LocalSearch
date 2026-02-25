@@ -62,4 +62,9 @@ query:
 
 metadata_db: "/data/localsearch_meta.db"
 
+# Translate container paths → host paths so the metadata DB stores
+# canonical Windows paths matching the local (non-Docker) ingest.
+path_map:
+  "/scandata": "D:\\"
+
 log_level: "INFO"

@@ -5,6 +5,15 @@
 <h1>Ingestion Dashboard</h1>
 <p class="subtitle" id="refresh-status">Auto-refresh: 10s</p>
 
+<!-- Live ingest progress banner -->
+<div class="ingest-banner" id="ingest-banner" style="display:none;">
+    <div class="ingest-phase" id="ingest-phase"></div>
+    <div class="ingest-details" id="ingest-details"></div>
+    <div class="ingest-bar-wrap">
+        <div class="ingest-bar" id="ingest-bar"></div>
+    </div>
+</div>
+
 <div class="card-grid">
     <div class="card">
         <span class="card-label">Indexed</span>
@@ -59,20 +68,61 @@
 
 {% block scripts %}
 <script>
+function fmtNum(n) { return Number(n).toLocaleString(); }
+
+function updateIngestBanner(ing) {
+    const banner = document.getElementById('ingest-banner');
+    const phase  = document.getElementById('ingest-phase');
+    const detail = document.getElementById('ingest-details');
+    const bar    = document.getElementById('ingest-bar');
+
+    if (!ing || ing.phase === 'idle') {
+        banner.style.display = 'none';
+        return;
+    }
+    banner.style.display = '';
+
+    if (ing.phase === 'scanning') {
+        phase.textContent = '🔍 Scanning filesystem…';
+        detail.textContent =
+            `${fmtNum(ing.dirs_visited)} dirs  ·  ${fmtNum(ing.files_checked)} files checked  ·  ${fmtNum(ing.files_new)} new`;
+        bar.style.width = '100%';
+        bar.classList.add('scanning');
+        bar.classList.remove('processing');
+    } else if (ing.phase === 'processing') {
+        const done = (ing.files_processed || 0) + (ing.files_errors || 0);
+        const total = ing.files_queued || 1;
+        const pct = Math.min(100, Math.round(done / total * 100));
+        phase.textContent = '⚙️ Processing files…';
+        detail.textContent =
+            `${fmtNum(done)} / ${fmtNum(total)} files  (${pct}%)  ·  ${fmtNum(ing.files_errors)} errors`;
+        bar.style.width = pct + '%';
+        bar.classList.remove('scanning');
+        bar.classList.add('processing');
+    } else {
+        phase.textContent = '⏳ ' + ing.phase;
+        detail.textContent = '';
+        bar.style.width = '0%';
+    }
+}
+
 async function refreshStats() {
     try {
         const resp = await fetch('/api/stats');
         const s = resp.ok ? await resp.json() : null;
         if (!s) return;
 
-        document.getElementById('stat-indexed').textContent = Number(s.indexed).toLocaleString();
-        document.getElementById('stat-pending').textContent = Number(s.pending).toLocaleString();
-        document.getElementById('stat-errors').textContent = Number(s.errors).toLocaleString();
-        document.getElementById('stat-total_files').textContent = Number(s.total_files).toLocaleString();
-        document.getElementById('stat-total_chunks').textContent = Number(s.total_chunks).toLocaleString();
-        const vc = typeof s.vector_count === 'number' ? Number(s.vector_count).toLocaleString() : s.vector_count;
+        document.getElementById('stat-indexed').textContent = fmtNum(s.indexed);
+        document.getElementById('stat-pending').textContent = fmtNum(s.pending);
+        document.getElementById('stat-errors').textContent = fmtNum(s.errors);
+        document.getElementById('stat-total_files').textContent = fmtNum(s.total_files);
+        document.getElementById('stat-total_chunks').textContent = fmtNum(s.total_chunks);
+        const vc = typeof s.vector_count === 'number' ? fmtNum(s.vector_count) : s.vector_count;
         document.getElementById('stat-vector_count').textContent = vc;
         document.getElementById('stat-last_file').textContent = s.last_file;
+
+        // Ingest progress
+        updateIngestBanner(s.ingest);
 
         const el = document.getElementById('error-list');
         if (s.recent_errors && s.recent_errors.length) {
@@ -97,5 +147,6 @@ function esc(s) {
 }
 
 setInterval(refreshStats, 10000);
+refreshStats();  // immediate first refresh
 </script>
 {% endblock %}
