@@ -210,25 +210,79 @@ class RAGEngine:
     def _extract_entity_keywords(self, question: str) -> list[str]:
         """Extract specific entity names (people, products) from the question.
 
-        Looks for names after prepositions like "for", "from", "to", "about".
+        Detects names via multiple patterns:
+          1. After prepositions: "email *for* jill" -> jill
+          2. Possessives:        "jill's email"     -> jill
+          3. Possessive-s:       "jills email"       -> jill  (no apostrophe)
+        Possessive suffixes ('s / s) are stripped to yield the base name.
+
         These are the CRITICAL keywords — unlike generic topic words like
         "email" or "address", these entities must appear in relevant results.
-
-        Example: "what email address have I used for jill" -> ["jill"]
         """
-        pattern = re.compile(
+        # Attribute nouns that follow a possessive name
+        _ATTR_NOUNS = {
+            'email', 'emails', 'address', 'addresses', 'phone', 'number',
+            'numbers', 'birthday', 'details', 'detail', 'contact', 'contacts',
+            'info', 'information', 'name', 'account', 'accounts', 'file',
+            'files', 'message', 'messages', 'letter', 'letters', 'photo',
+            'photos', 'document', 'documents', 'order', 'orders', 'key',
+            'keys', 'password', 'passwords', 'code', 'codes', 'certificate',
+            'data', 'record', 'records', 'resume', 'cv',
+        }
+
+        entities = []
+        seen: set[str] = set()
+
+        def _add(name: str) -> None:
+            # Strip possessive suffix and lowercase
+            n = name.lower().rstrip("'")
+            if n.endswith("'s"):
+                n = n[:-2]
+            elif n.endswith("s") and len(n) > 2:
+                # Could be possessive-s (jills) — keep base if followed
+                # by an attribute noun (handled by caller passing stripped form).
+                pass  # Don't strip plain 's' here; patterns below handle it.
+            if n and n not in _STOP_WORDS and len(n) > 1 and n not in seen:
+                entities.append(n)
+                seen.add(n)
+
+        # Pattern 1: after prepositions (for/from/to/about/regarding/with)
+        prep_pat = re.compile(
             r'\b(?:for|from|to|about|regarding|with)\s+'
             r'([a-zA-Z][a-zA-Z\'-]*(?:\s+[a-zA-Z][a-zA-Z\'-]*)?)',
             re.IGNORECASE,
         )
-        entities = []
-        seen = set()
-        for m in pattern.finditer(question):
-            words = m.group(1).strip().lower().split()
-            for w in words:
-                if w not in _STOP_WORDS and len(w) > 1 and w not in seen:
-                    entities.append(w)
-                    seen.add(w)
+        for m in prep_pat.finditer(question):
+            for w in m.group(1).strip().split():
+                _add(w)
+
+        # Pattern 2: possessive with apostrophe — "jill's email"
+        poss_apos = re.compile(
+            r"\b([a-zA-Z][a-zA-Z'-]*)'s\s+(\w+)", re.IGNORECASE,
+        )
+        for m in poss_apos.finditer(question):
+            _add(m.group(1))
+
+        # Pattern 3: possessive without apostrophe — "jills email"
+        # <Word>s followed by an attribute noun.
+        # Exclude common English words that naturally end in 's' or whose
+        # base form is a common word (e.g. "windows" -> "window").
+        _COMMON_WORDS_S = {
+            'windows', 'accounts', 'results', 'address', 'always', 'class',
+            'items', 'does', 'has', 'was', 'this', 'plus', 'less', 'across',
+            'others', 'status', 'process', 'success', 'access', 'business',
+            'various', 'previous', 'serious', 'focus', 'thanks', 'bonus',
+            'campus', 'virus', 'canvas', 'basis', 'crisis', 'analysis',
+        }
+        poss_s = re.compile(
+            r'\b([a-zA-Z][a-zA-Z\'-]{1,})s\s+(\w+)', re.IGNORECASE,
+        )
+        for m in poss_s.finditer(question):
+            attr = m.group(2).lower()
+            full_word = m.group(1).lower() + 's'  # e.g. "windows"
+            if attr in _ATTR_NOUNS and full_word not in _COMMON_WORDS_S:
+                _add(m.group(1))  # The name WITHOUT the trailing s
+
         if entities:
             logger.info("Entity keywords extracted: %s", entities)
         return entities
@@ -263,10 +317,18 @@ class RAGEngine:
         # Always search aggressively for entity keywords (names, people)
         # even if they appear in some results — embeddings underweight them
         # so the initial search typically finds too few entity-matching files.
+        # Only add the entity base forms (not possessive variants like "jills").
         entity_set = set(entity_keywords or [])
         for ek in entity_set:
             if ek not in missing:
                 missing.append(ek)
+
+        # Remove non-entity keywords that are just possessive forms of an
+        # entity already being searched (e.g. "jills" when "jill" is in list).
+        if entity_set:
+            missing = [kw for kw in missing
+                       if kw in entity_set
+                       or kw.rstrip("'s") not in entity_set]
 
         if not missing:
             return results  # All keywords already present somewhere
@@ -277,7 +339,9 @@ class RAGEngine:
         seen = {(r.file_path, r.chunk_index) for r in results}
         supplementary: list[SearchResult] = []
 
-        # Generate targeted queries that embed the missing keyword
+        # Generate targeted queries that embed the missing keyword.
+        # Limit to 4 diverse queries per keyword to keep latency reasonable
+        # (each query = 1 Qdrant round-trip with embedding).
         for kw in missing:
             # Build context from other keywords
             context_kws = ' '.join(k for k in keywords if k != kw)
@@ -286,7 +350,6 @@ class RAGEngine:
                 f"Dear {kw} email message from to",
                 f"To {kw} From {kw} Subject",
                 f"From: {kw} To: sent received message",
-                f"{kw} {kw} {context_kws} personal contact",
             ]
             supp_k = max(top_k * 2, 30)  # search deeper to find entity matches
             for tq in targeted_queries:
@@ -631,6 +694,16 @@ class RAGEngine:
         # follow-up searches and re-rank so entity-matching results surface.
         keywords = self._extract_query_keywords(question) if not broad else []
         entity_keywords = self._extract_entity_keywords(question) if not broad else []
+
+        # Merge entity base-forms into keywords so that reranking and
+        # coverage checks use the normalised name (e.g. "jill" not "jills").
+        if entity_keywords:
+            kw_set = set(keywords)
+            for ek in entity_keywords:
+                if ek not in kw_set:
+                    keywords.append(ek)
+                    kw_set.add(ek)
+
         if keywords and not broad:
             results = self._ensure_keyword_coverage(
                 results, question, keywords, top_k, file_type,
