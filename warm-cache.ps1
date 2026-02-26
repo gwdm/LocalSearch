@@ -9,6 +9,7 @@
     — reducing startup from ~9 minutes (cold) to under 1 minute.
 
     This script is safe to run while Qdrant is stopped OR running. It only reads.
+    Uses pure PowerShell — no Python dependency.
 
 .PARAMETER Path
     Root directory of the Qdrant collection data.
@@ -34,70 +35,51 @@ if (-not (Test-Path $Path)) {
     exit 1
 }
 
-# Use the project's Python env for reliable streaming read
-$Python = Join-Path $env:USERPROFILE "Miniconda3\envs\312\python.exe"
-if (-not (Test-Path $Python)) {
-    Write-Host "ERROR: Python not found at $Python" -ForegroundColor Red
-    exit 1
-}
-
 Write-Host "Warming page cache: $Path (buffer=${BufferMB}MB)" -ForegroundColor Cyan
 
-& $Python -u -c @"
-import os, sys, time
-
-root = sys.argv[1]
-buf_size = int(sys.argv[2]) * 1024 * 1024
+$bufSize = $BufferMB * 1024 * 1024
+$buf = New-Object byte[] $bufSize
 
 # Enumerate files
-files = []
-total_size = 0
-for dirpath, dirs, fnames in os.walk(root):
-    for f in fnames:
-        fp = os.path.join(dirpath, f)
-        try:
-            sz = os.path.getsize(fp)
-            files.append((fp, sz))
-            total_size += sz
-        except OSError:
-            pass
+$files = Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue
+$totalSize = ($files | Measure-Object -Property Length -Sum).Sum
+$totalGB = [math]::Round($totalSize / 1GB, 2)
+Write-Host "  $($files.Count) files, $totalGB GB to warm"
 
-total_gb = total_size / (1 << 30)
-print(f'  {len(files)} files, {total_gb:.2f} GB to warm')
+$bytesRead = [long]0
+$errors = 0
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$lastReport = $sw.ElapsedMilliseconds
 
-buf = bytearray(buf_size)
-bytes_read = 0
-errors = 0
-start = time.monotonic()
-last_report = start
+foreach ($file in $files) {
+    try {
+        $stream = [System.IO.File]::OpenRead($file.FullName)
+        try {
+            while ($true) {
+                $n = $stream.Read($buf, 0, $bufSize)
+                if ($n -eq 0) { break }
+                $bytesRead += $n
+            }
+        } finally {
+            $stream.Close()
+        }
+    } catch {
+        $errors++
+    }
 
-for fp, sz in files:
-    try:
-        with open(fp, 'rb') as fh:
-            while True:
-                n = fh.readinto(buf)
-                if not n:
-                    break
-                bytes_read += n
-    except OSError:
-        errors += 1
+    $now = $sw.ElapsedMilliseconds
+    if (($now - $lastReport) -ge 5000) {
+        $lastReport = $now
+        $elapsed = $now / 1000.0
+        $pct = if ($totalSize -gt 0) { [math]::Round($bytesRead / $totalSize * 100, 1) } else { 0 }
+        $rateMB = if ($elapsed -gt 0) { [math]::Round($bytesRead / 1MB / $elapsed, 0) } else { 0 }
+        Write-Host "  ${pct}% ($([math]::Round($bytesRead / 1GB, 1)) / $totalGB GB) @ $rateMB MB/s" -ForegroundColor DarkGray
+    }
+}
 
-    now = time.monotonic()
-    if now - last_report >= 5:
-        last_report = now
-        elapsed = now - start
-        pct = bytes_read / total_size * 100 if total_size else 0
-        rate = bytes_read / (1 << 20) / elapsed if elapsed else 0
-        print(f'  {pct:.1f}% ({bytes_read/(1<<30):.1f} / {total_gb:.1f} GB) @ {rate:.0f} MB/s')
-
-elapsed = time.monotonic() - start
-rate = bytes_read / (1 << 20) / elapsed if elapsed else 0
-print(f'  Done: {bytes_read/(1<<30):.1f} GB warmed in {elapsed:.1f}s ({rate:.0f} MB/s avg)')
-if errors:
-    print(f'  {errors} files skipped (locked/permission)')
-"@ $Path $BufferMB
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Cache warming failed" -ForegroundColor Red
-    exit 1
+$elapsed = $sw.Elapsed.TotalSeconds
+$rateMB = if ($elapsed -gt 0) { [math]::Round($bytesRead / 1MB / $elapsed, 0) } else { 0 }
+Write-Host "  Done: $([math]::Round($bytesRead / 1GB, 1)) GB warmed in $([math]::Round($elapsed, 1))s ($rateMB MB/s avg)" -ForegroundColor Green
+if ($errors -gt 0) {
+    Write-Host "  $errors files skipped (locked/permission)" -ForegroundColor Yellow
 }

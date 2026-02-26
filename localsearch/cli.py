@@ -31,8 +31,9 @@ def cli(ctx, config):
 
 @cli.command()
 @click.option("--path", "-p", multiple=True, help="Specific path(s) to scan (overrides config)")
+@click.option("--file-list", "-f", default=None, help="File with list of paths to process (one per line)")
 @click.pass_context
-def ingest(ctx, path):
+def ingest(ctx, path, file_list):
     """Scan files and build the search index."""
     cfg = load_config(ctx.obj["config_path"])
     _setup_logging(cfg.log_level)
@@ -43,7 +44,7 @@ def ingest(ctx, path):
     paths = list(path) if path else None
 
     console.print("[bold]Starting ingestion pipeline...[/bold]")
-    stats = pipeline.ingest(paths)
+    stats = pipeline.ingest(paths, file_list=file_list)
 
     console.print()
     table = Table(title="Ingestion Complete")
@@ -137,6 +138,54 @@ def status(ctx):
     table.add_row("Total chunks", str(stats["total_chunks"]))
     table.add_row("Vectors in Qdrant", str(stats["vector_count"]))
     console.print(table)
+
+
+@cli.command()
+@click.option("--output", "-o", default="changed_files.txt", help="Output file for changed file paths")
+@click.option("--path", "-p", multiple=True, help="Specific path(s) to scan (overrides config)")
+@click.pass_context
+def scan(ctx, output, path):
+    """Scan for new/changed files using USN journal (native Windows only)."""
+    cfg = load_config(ctx.obj["config_path"])
+    _setup_logging(cfg.log_level)
+
+    from localsearch.crawler.scanner import FileScanner
+    from localsearch.storage.metadb import MetadataDB
+
+    metadb = MetadataDB(cfg.metadata_db)
+    scanner = FileScanner(cfg, metadb)
+    paths = list(path) if path else None
+
+    console.print("[bold]Scanning for changes...[/bold]")
+    changed_files = []
+    for scanned_file in scanner.scan(paths):
+        changed_files.append(scanned_file.path)
+
+    with open(output, "w", encoding="utf-8") as f:
+        for file_path in changed_files:
+            f.write(f"{file_path}\n")
+
+    console.print(f"[bold green]Found {len(changed_files)} changed files[/bold green]")
+    console.print(f"[cyan]Written to: {output}[/cyan]")
+
+
+@cli.command()
+@click.option("--output", "-o", default=None, help="Output file for USN changes (default: data/usn_changes.txt)")
+@click.pass_context
+def collect_usn(ctx, output):
+    """Collect USN journal changes and append to permanent log (requires Admin)."""
+    cfg = load_config(ctx.obj["config_path"])
+    _setup_logging(cfg.log_level)
+
+    from localsearch.usn_collector import collect_changes
+
+    console.print("[bold]Collecting USN journal changes...[/bold]")
+    count = collect_changes(ctx.obj["config_path"], output)
+    
+    if count > 0:
+        console.print(f"[bold green]Collected {count} changes[/bold green]")
+    else:
+        console.print("[yellow]No new changes found[/yellow]")
 
 
 @cli.command()

@@ -48,6 +48,7 @@ class ScannerConfig:
     use_content_hash: bool = False
     batch_size: int = 1000
     use_usn_journal: bool = True   # Use NTFS change journal for fast repeat scans (Windows only)
+    skip_cleanup: bool = False     # Skip deleted-file cleanup phase (faster for Docker/large datasets)
 
 
 @dataclass
@@ -145,6 +146,9 @@ def _merge_dataclass(dc: object, data: dict) -> None:
 def load_config(config_path: Optional[str] = None) -> Config:
     """Load configuration from a YAML file.
 
+    Automatically initializes RAM disk on Windows for performance.
+    Falls back to disk caching if insufficient RAM available.
+
     Search order:
     1. Explicit path argument
     2. LOCALSEARCH_CONFIG environment variable
@@ -177,5 +181,23 @@ def load_config(config_path: Optional[str] = None) -> Config:
                              "extensions"]:
             if section_name in data and isinstance(data[section_name], dict):
                 _merge_dataclass(getattr(cfg, section_name), data[section_name])
+
+    # Initialize RAM disk on Windows (auto-detect size, fallback to caching)
+    if os.name == "nt":
+        try:
+            from localsearch.storage.ramdisk import RAMDiskManager
+            import logging
+            logger = logging.getLogger(__name__)
+
+            ramdisk = RAMDiskManager(cfg.metadata_db)
+            if ramdisk.create():
+                cfg.metadata_db = ramdisk.get_db_path()
+                logger.info("✓ RAM disk initialized: %s", cfg.metadata_db)
+            elif not ramdisk.fallback_to_cache:
+                logger.info("RAM disk unavailable, using disk caching")
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug("RAM disk init failed (using disk caching): %s", e)
 
     return cfg

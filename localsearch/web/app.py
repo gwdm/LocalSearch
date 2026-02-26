@@ -10,6 +10,7 @@ Provides three views:
 """
 
 import logging
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -62,58 +63,57 @@ def _get_rag_engine():
 
 
 def _get_stats() -> dict:
-    """Fetch dashboard stats from SQLite + Qdrant (same logic as dashboard.py)."""
+    """Fetch dashboard stats from JSON progress file (no SQLite locks)."""
     cfg = _get_config()
+    
+    # Read cached stats from JSON file (updated by pipeline after each batch)
+    progress = read_progress(cfg.metadata_db)
+    
     stats = {
-        "total_files": 0, "indexed": 0, "pending": 0,
-        "errors": 0, "total_chunks": 0, "vector_count": "?",
-        "last_file": "--", "recent_errors": [],
-        "ingest": {"phase": "idle"},
+        "total_files": progress.get("db_total", 0),
+        "indexed": progress.get("db_indexed", 0),
+        "pending": progress.get("db_pending", 0),
+        "errors": progress.get("db_errors", 0),
+        "total_chunks": progress.get("db_chunks", 0),
+        "vector_count": "?",
+        "last_file": "--",
+        "recent_errors": [],
+        "ingest": {
+            "phase": progress.get("phase", "idle"),
+            "files_queued": progress.get("files_queued", 0),
+            "files_processed": progress.get("files_processed", 0),
+            "files_errors": progress.get("files_errors", 0),
+            "dirs_visited": progress.get("dirs_visited", 0),
+            "files_checked": progress.get("files_checked", 0),
+            "files_new": progress.get("files_new", 0),
+        },
     }
-
+    
+    # Get last file and recent errors from SQLite (low priority, can fail gracefully)
     db_path = cfg.metadata_db
-    if not Path(db_path).exists():
-        return stats
-
-    try:
-        conn = sqlite3.connect(db_path, timeout=5)
-        cur = conn.cursor()
-
-        cur.execute("SELECT COUNT(*) FROM files")
-        stats["total_files"] = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM files WHERE status='indexed'")
-        stats["indexed"] = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM files WHERE status IN ('pending','processing')")
-        stats["pending"] = cur.fetchone()[0]
-
-        cur.execute("SELECT COUNT(*) FROM files WHERE status='error'")
-        stats["errors"] = cur.fetchone()[0]
-
-        cur.execute("SELECT COALESCE(SUM(chunk_count),0) FROM files WHERE status='indexed'")
-        stats["total_chunks"] = cur.fetchone()[0]
-
-        cur.execute("SELECT file_path FROM files ORDER BY indexed_at DESC LIMIT 1")
-        row = cur.fetchone()
-        if row:
-            stats["last_file"] = row[0]
-
-        cur.execute(
-            "SELECT file_path, error FROM files WHERE status='error' "
-            "ORDER BY indexed_at DESC LIMIT 10"
-        )
-        stats["recent_errors"] = [
-            {"file": Path(fp).name, "path": fp, "error": (err or "")[:120]}
-            for fp, err in cur.fetchall()
-        ]
-
-        conn.close()
-    except Exception as exc:
-        logger.warning("Failed to read metadb: %s", exc)
-
-    # Live ingest progress (JSON file — works across Docker bind mounts)
-    stats["ingest"] = read_progress(db_path)
+    if Path(db_path).exists():
+        try:
+            conn = sqlite3.connect(db_path, timeout=1)
+            cur = conn.cursor()
+            
+            cur.execute("SELECT file_path FROM files ORDER BY indexed_at DESC LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                stats["last_file"] = row[0]
+            
+            cur.execute(
+                "SELECT file_path, error FROM files WHERE status='error' "
+                "ORDER BY indexed_at DESC LIMIT 10"
+            )
+            stats["recent_errors"] = [
+                {"file": Path(fp).name, "path": fp, "error": (err or "")[:120]}
+                for fp, err in cur.fetchall()
+            ]
+            
+            conn.close()
+        except Exception:
+            # Non-critical, stats already populated from JSON
+            pass
 
     try:
         from qdrant_client import QdrantClient
@@ -144,6 +144,20 @@ def create_app(config_path: str | None = None) -> Flask:
         template_folder=str(Path(__file__).parent / "templates"),
         static_folder=str(Path(__file__).parent / "static"),
     )
+
+    # Register RAM disk cleanup on app shutdown
+    @app.teardown_appcontext
+    def teardown_ramdisk(*args):
+        """Cleanup RAM disk when app shuts down."""
+        if os.name == "nt":
+            try:
+                from localsearch.storage.ramdisk import RAMDiskManager
+                ramdisk = RAMDiskManager(_config.metadata_db)
+                if ramdisk.is_active:
+                    logger.info("Cleaning up RAM disk...")
+                    ramdisk.destroy()
+            except Exception as e:
+                logger.debug("RAM disk cleanup: %s", e)
 
     # ---- Page routes ----
 

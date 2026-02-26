@@ -47,11 +47,10 @@ class PDFExtractor(BaseExtractor):
 
             doc.close()
 
-            if not full_text.strip():
-                raise ExtractionError(f"No text extracted from PDF (even with OCR): {file_path}")
-
+            # Empty PDF is OK - blank pages, image-only PDFs, diagrams
+            # Return empty result with metadata instead of error
             return ExtractionResult(
-                text=full_text,
+                text=full_text.strip(),
                 metadata={"page_count": len(pages), "ocr_used": ocr_was_used},
             )
         except ExtractionError:

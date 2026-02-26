@@ -1,5 +1,5 @@
-# Docker config — paths remapped for container volumes
-# Mount your files at /scandata, SQLite at /data, Qdrant at its own container
+# LocalSearch Configuration (Docker)
+# Container paths: D:\ mounted at /scandata, SQLite at /data, Qdrant via service name
 
 scan_paths:
   - "/scandata"
@@ -20,7 +20,7 @@ qdrant:
 
 ollama:
   host: "http://host.docker.internal:11434"   # Ollama running on host
-  model: "llama3"
+  model: "qwen3:14b"
 
 embedding:
   model: "mixedbread-ai/mxbai-embed-large-v1"
@@ -41,6 +41,7 @@ scanner:
   max_file_size_mb: 500
   use_content_hash: false
   batch_size: 1000
+  skip_cleanup: true        # Skip slow deleted-file checks (Docker has no USN journal)
 
 pipeline:
   cpu_workers: 8
@@ -57,7 +58,7 @@ pipeline:
     video: 5000
 
 query:
-  top_k: 10
+  top_k: 15
   score_threshold: 0.3
 
 metadata_db: "/data/localsearch_meta.db"

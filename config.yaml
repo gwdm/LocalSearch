@@ -1,4 +1,13 @@
-# LocalSearch Configuration
+# ==========================================================================
+# DEPRECATED — This file is no longer used.
+# LocalSearch runs exclusively in Docker. All configuration is in:
+#   config.docker.yaml
+#
+# To start: docker compose up -d
+# Or:       .\start.ps1
+# ==========================================================================
+
+# LocalSearch Configuration (LEGACY — kept for reference only)
 
 # Directories to scan for files
 scan_paths:

@@ -32,11 +32,10 @@ class DocxExtractor(BaseExtractor):
             if table_texts:
                 all_text += "\n\n" + "\n".join(table_texts)
 
-            if not all_text.strip():
-                raise ExtractionError(f"No text extracted from DOCX: {file_path}")
-
+            # Empty DOCX is OK - template files, forms may have no text
+            # Return empty result with metadata instead of error
             return ExtractionResult(
-                text=all_text,
+                text=all_text.strip(),
                 metadata={
                     "paragraph_count": len(paragraphs),
                     "table_count": len(doc.tables),

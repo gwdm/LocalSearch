@@ -1,0 +1,5 @@
+This is a second test file to verify the complete USN journal workflow.
+Created at timestamp: 2026-02-26 11:10:00
+This should be indexed and then the USN log entry should be automatically trimmed.
+
+Test data: Lorem ipsum dolor sit amet, consectetur adipiscing elit.

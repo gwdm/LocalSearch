@@ -70,7 +70,7 @@
 <script>
 function fmtNum(n) { return Number(n).toLocaleString(); }
 
-function updateIngestBanner(ing) {
+function updateIngestBanner(ing, indexed, total) {
     const banner = document.getElementById('ingest-banner');
     const phase  = document.getElementById('ingest-phase');
     const detail = document.getElementById('ingest-details');
@@ -90,12 +90,11 @@ function updateIngestBanner(ing) {
         bar.classList.add('scanning');
         bar.classList.remove('processing');
     } else if (ing.phase === 'processing') {
-        const done = (ing.files_processed || 0) + (ing.files_errors || 0);
-        const total = ing.files_queued || 1;
-        const pct = Math.min(100, Math.round(done / total * 100));
+        // Show overall progress: indexed / total_tracked (not session-scoped queued files)
+        const pct = Math.min(100, Math.round((indexed || 0) / (total || 1) * 100));
         phase.textContent = '⚙️ Processing files…';
         detail.textContent =
-            `${fmtNum(done)} / ${fmtNum(total)} files  (${pct}%)  ·  ${fmtNum(ing.files_errors)} errors`;
+            `${fmtNum(indexed || 0)} / ${fmtNum(total || 1)} files  (${pct}%)  ·  ${fmtNum(ing.files_errors)} errors`;
         bar.style.width = pct + '%';
         bar.classList.remove('scanning');
         bar.classList.add('processing');
@@ -124,7 +123,7 @@ async function refreshStats() {
         // Ingest progress
         updateIngestBanner(s.ingest);
 
-        const el = document.getElementById('error-list');
+        const el = document.getElem, s.indexed, s.total_filesentById('error-list');
         if (s.recent_errors && s.recent_errors.length) {
             el.innerHTML = s.recent_errors.map(e =>
                 `<div class="error-row"><span class="error-file">${esc(e.file)}</span><span class="error-msg">${esc(e.error)}</span></div>`

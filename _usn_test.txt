@@ -1,0 +1,3 @@
+This is a test file for USN journal workflow validation.
+It should be detected, extracted, chunked, embedded, and indexed.
+Then the USN log entry should be automatically trimmed after successful processing.

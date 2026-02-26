@@ -132,9 +132,9 @@ class MsgExtractor(BaseExtractor):
             parts.append("\n".join(attachment_texts))
 
         text = "\n".join(parts).strip()
-        if not text:
-            raise ExtractionError(f"No text extracted from MSG: {file_path}")
-
+        # Empty MSG is OK - blank emails, calendar invites may have no text
+        # Return empty result with metadata instead of error
+        
         metadata = {
             "subject": "",
             "sender": "",

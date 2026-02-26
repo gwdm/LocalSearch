@@ -43,8 +43,9 @@ ENV LOCALSEARCH_CONFIG=/app/config.docker.yaml
 EXPOSE 8080
 
 # Entrypoint script handles mode selection (ingest / web / both)
+# Strip Windows CRLF line endings before chmod (git on Windows adds \r)
 COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+RUN sed -i 's/\r$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["both"]

@@ -28,7 +28,7 @@ from localsearch.crawler.scanner import FileScanner, ScannedFile
 from localsearch.embedder import Embedder
 from localsearch.extractors.base import ExtractionError
 from localsearch.storage.metadb import FileRecord, MetadataDB
-from localsearch.storage.progress import write_progress
+from localsearch.storage.progress import write_progress, update_db_stats
 from localsearch.storage.vectordb import VectorDB
 from localsearch.worker import extract_and_chunk, init_worker
 
@@ -142,6 +142,11 @@ class AsyncEmbedder:
                     vectors = self._embedder.embed(batch_texts)
                     self._upserter.submit(vectors, batch_payloads)
                     self._chunks_embedded += len(batch_texts)
+                    
+                    # Log embedding progress every 10k chunks
+                    if self._chunks_embedded % 10000 == 0:
+                        logger.info("Embedded %d chunks (queue depth: %d batches)", 
+                                    self._chunks_embedded, self._queue.qsize())
             except Exception as e:
                 logger.error("Embedding failed: %s", e)
                 self._error = e
@@ -177,6 +182,36 @@ class Pipeline:
         # Set by KeyboardInterrupt handler for graceful shutdown
         self._shutdown = threading.Event()
 
+        # Build reverse path_map for Docker: host paths → container paths
+        self._reverse_path_map = []
+        if config.path_map:
+            for container_prefix, host_prefix in sorted(
+                config.path_map.items(), key=lambda kv: len(kv[1]), reverse=True
+            ):
+                self._reverse_path_map.append((host_prefix, container_prefix))
+            logger.info("Reverse path mapping active (for extraction): %s", dict(self._reverse_path_map))
+
+    def _get_file_path_for_extraction(self, canonical_path: str) -> str:
+        """Convert canonical (host) path to container path for file I/O.
+        
+        When path_map is configured, metadata DB stores canonical host paths
+        (e.g., D:\\...) but Docker needs container paths (e.g., /scandata/...)
+        to actually open files.
+        """
+        if not self._reverse_path_map:
+            return canonical_path
+            
+        for host_prefix, container_prefix in self._reverse_path_map:
+            # Normalize separators for comparison
+            normalized_path = canonical_path.replace("\\", "/")
+            normalized_host = host_prefix.replace("\\", "/").rstrip("/")
+            
+            if normalized_path.startswith(normalized_host):
+                remainder = normalized_path[len(normalized_host):].lstrip("/")
+                return container_prefix.rstrip("/") + "/" + remainder
+        
+        return canonical_path
+
     # -- Lazy GPU extractor construction --------------------------------
 
     def _get_audio_extractor(self):
@@ -198,11 +233,35 @@ class Pipeline:
             self._video_extractor = VideoExtractor(self._get_audio_extractor())
         return self._video_extractor
 
+    def _read_file_list(self, file_list_path: str):
+        """Read file paths from text file and yield ScannedFile objects."""
+        import os
+        with open(file_list_path, "r", encoding="utf-8") as f:
+            for line in f:
+                file_path = line.strip()
+                if not file_path or not Path(file_path).exists():
+                    continue
+                try:
+                    stat = os.stat(file_path)
+                    ext = Path(file_path).suffix.lower()
+                    file_type = self.config.extensions.get_type(ext)
+                    if file_type:
+                        yield ScannedFile(
+                            path=file_path,
+                            size=stat.st_size,
+                            mtime=stat.st_mtime,
+                            file_type=file_type,
+                            extension=ext,
+                        )
+                except (OSError, PermissionError) as e:
+                    logger.debug("Skipping %s: %s", file_path, e)
+                    continue
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def ingest(self, paths: Optional[list[str]] = None) -> dict:
+    def ingest(self, paths: Optional[list[str]] = None, file_list: Optional[str] = None) -> dict:
         """Run the full ingestion pipeline.
 
         Phase 1 — CPU-bound files extracted in a **ProcessPoolExecutor**
@@ -210,6 +269,12 @@ class Pipeline:
         Phase 2 — GPU-bound files (audio/video) processed sequentially
                   in the main process.
         Phase 3 — Deleted-file cleanup.
+
+        Args:
+            paths: Optional list of paths to scan (overrides config)
+            file_list: Path to text file containing list of files to process
+                      (one per line). If provided, skips scanner and processes
+                      only these files.
 
         Embedding is batched, and Qdrant upserts happen via a
         background thread queue.
@@ -248,12 +313,20 @@ class Pipeline:
         async_embedder.start()
 
         # Partition files into CPU and GPU buckets
-        logger.info("Scanning for new and changed files...")
+        if file_list:
+            logger.info("Processing files from list: %s", file_list)
+            file_source = self._read_file_list(file_list)
+        else:
+            logger.info("Scanning for new and changed files...")
+            file_source = self.scanner.scan(paths)
+
         cpu_files: list[ScannedFile] = []
         gpu_files: list[ScannedFile] = []
         pending_records: list[FileRecord] = []
+        scanned_paths: set[str] = set()  # Track all scanned paths for USN log trimming
 
-        for scanned_file in self.scanner.scan(paths):
+        for scanned_file in file_source:
+            scanned_paths.add(scanned_file.path)
             stats["scanned"] += 1
             if stats["scanned"] % 10_000 == 0:
                 logger.info(
@@ -385,6 +458,8 @@ class Pipeline:
             self.metadb.mark_errors_batch(error_batch)
             indexed_batch.clear()
             error_batch.clear()
+            # Update dashboard stats in JSON (no locks needed)
+            update_db_stats(self.config.metadata_db)
 
         def handle_result(sf: ScannedFile, worker_result: dict):
             """Process result from a worker process or GPU extraction.
@@ -427,16 +502,18 @@ class Pipeline:
 
         def maybe_flush():
             """Flush embedding and metadb buffers if thresholds are met."""
-            if len(embed_texts) >= pcfg.embed_batch_size:
-                flush_embeddings()
-            if len(indexed_batch) + len(error_batch) >= METADB_FLUSH_INTERVAL:
-                flush_metadb()
-            # Update live progress
+            # Always update progress counter first (extraction complete)
             write_progress(
                 self.config.metadata_db,
                 files_processed=stats["processed"],
                 files_errors=stats["errors"],
             )
+            
+            # Then handle embedding/DB flushes (may block if queue full)
+            if len(embed_texts) >= pcfg.embed_batch_size:
+                flush_embeddings()
+            if len(indexed_batch) + len(error_batch) >= METADB_FLUSH_INTERVAL:
+                flush_metadb()
 
         # ------------------------------------------------------------------
         # Phase 1: Parallel CPU extraction (ProcessPoolExecutor)
@@ -482,7 +559,7 @@ class Pipeline:
         # ------------------------------------------------------------------
         # Phase 3: Clean up deleted files
         # ------------------------------------------------------------------
-        if not self._shutdown.is_set():
+        if not self._shutdown.is_set() and not self.config.scanner.skip_cleanup:
             logger.info("Checking for deleted files...")
             deleted = self.scanner.find_deleted(paths)
             if deleted:
@@ -501,6 +578,20 @@ class Pipeline:
                 if removed:
                     self.metadb.remove_files(removed)
                 stats["deleted"] = len(removed)
+
+        # Trim processed entries from permanent USN log
+        usn_log = Path(self.config.metadata_db).parent / "usn_changes.txt"
+        if usn_log.exists() and scanned_paths:
+            logger.info("Trimming processed entries from USN log...")
+            # Trim the log
+            from localsearch.usn_collector import trim_processed
+            trimmed = trim_processed(
+                config_path=None,  # Will use current config
+                input_file=str(usn_log),
+                processed_paths=scanned_paths
+            )
+            if trimmed > 0:
+                logger.info("Trimmed %d entries from USN log", trimmed)
 
         stats["elapsed_seconds"] = round(time.time() - start_time, 1)
         logger.info(
@@ -567,7 +658,9 @@ class Pipeline:
                 if sf is None:
                     exhausted = True
                     break
-                fut = pool.submit(extract_and_chunk, sf.path, sf.file_type)
+                # Convert canonical path → container path for file I/O
+                extraction_path = self._get_file_path_for_extraction(sf.path)
+                fut = pool.submit(extract_and_chunk, extraction_path, sf.file_type)
                 pending[fut] = sf
 
             # Drain completed futures and refill
@@ -617,7 +710,9 @@ class Pipeline:
                     if sf is None:
                         exhausted = True
                         break
-                    fut = pool.submit(extract_and_chunk, sf.path, sf.file_type)
+                    # Convert canonical path → container path for file I/O
+                    extraction_path = self._get_file_path_for_extraction(sf.path)
+                    fut = pool.submit(extract_and_chunk, extraction_path, sf.file_type)
                     pending[fut] = sf
 
     def _extract_gpu(self, sf: ScannedFile) -> dict:
@@ -640,7 +735,9 @@ class Pipeline:
                     result["error"] = f"Unknown GPU file type: {sf.file_type}"
                     return
 
-                extraction = extractor.extract(sf.path)
+                # Convert canonical path → container path for file I/O
+                extraction_path = self._get_file_path_for_extraction(sf.path)
+                extraction = extractor.extract(extraction_path)
                 chunks = self.chunker.chunk(
                     text=extraction.text,
                     source_file=sf.path,

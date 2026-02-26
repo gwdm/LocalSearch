@@ -374,6 +374,29 @@ class MetadataDB:
         """Reclaim space and defragment the database."""
         self._get_conn().execute("VACUUM")
 
+    def checkpoint(self, backup_path: Optional[str] = None) -> None:
+        """Checkpoint the database: flush WAL and optionally copy to backup.
+
+        Used when data is on a volatile medium (RAM disk) to safely persist
+        to disk. After each batch of updates, call this to sync RAM to disk.
+
+        Args:
+            backup_path: Optional path to copy the DB to (for RAM disk safety).
+                        If None, just flushes the WAL.
+        """
+        import shutil
+        
+        # Flush WAL to main db file
+        self._get_conn().execute("PRAGMA wal_checkpoint(RESTART)")
+        
+        # Copy to backup if specified
+        if backup_path:
+            try:
+                shutil.copy2(self.db_path, backup_path)
+            except Exception as e:
+                import logging
+                logging.warning("Failed to checkpoint to %s: %s", backup_path, e)
+
     def close(self) -> None:
         """Close the database connection."""
         if self._conn:

@@ -24,11 +24,10 @@ class ImageExtractor(BaseExtractor):
             image = Image.open(file_path)
             text = pytesseract.image_to_string(image)
 
-            if not text.strip():
-                raise ExtractionError(f"No text detected in image: {file_path}")
-
+            # Empty text is OK - logos, icons, decorative images have no text
+            # Return empty result with metadata instead of error
             return ExtractionResult(
-                text=text,
+                text=text.strip(),
                 metadata={
                     "image_size": f"{image.width}x{image.height}",
                     "image_mode": image.mode,

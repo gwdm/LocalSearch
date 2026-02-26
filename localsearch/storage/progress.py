@@ -28,6 +28,12 @@ _DEFAULT: dict = {
     "current_file": "",
     "started_at": None,
     "updated_at": None,
+    # Database stats (read from SQLite, cached in JSON for dashboard)
+    "db_total": 0,
+    "db_indexed": 0,
+    "db_pending": 0,
+    "db_errors": 0,
+    "db_chunks": 0,
 }
 
 
@@ -82,3 +88,49 @@ def read_progress(metadata_db: str) -> dict:
 def clear_progress(metadata_db: str) -> None:
     """Reset progress to idle."""
     write_progress(metadata_db, **_DEFAULT)
+
+
+def update_db_stats(metadata_db: str) -> None:
+    """Read current SQLite stats and write them to the progress JSON.
+    
+    This allows the dashboard to read stats from the JSON file
+    without hitting database locks during heavy writes.
+    """
+    import sqlite3
+    from pathlib import Path
+    
+    if not Path(metadata_db).exists():
+        return
+        
+    try:
+        conn = sqlite3.connect(metadata_db, timeout=1)
+        cur = conn.cursor()
+        
+        cur.execute("SELECT COUNT(*) FROM files")
+        total = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(*) FROM files WHERE status='indexed'")
+        indexed = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(*) FROM files WHERE status IN ('pending','processing')")
+        pending = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(*) FROM files WHERE status='error'")
+        errors = cur.fetchone()[0]
+        
+        cur.execute("SELECT COALESCE(SUM(chunk_count),0) FROM files WHERE status='indexed'")
+        chunks = cur.fetchone()[0]
+        
+        conn.close()
+        
+        write_progress(
+            metadata_db,
+            db_total=total,
+            db_indexed=indexed,
+            db_pending=pending,
+            db_errors=errors,
+            db_chunks=chunks,
+        )
+    except Exception:
+        logger.debug("Failed to update db stats in progress file", exc_info=True)
+

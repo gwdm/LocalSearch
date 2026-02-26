@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"d:\\\\OneDrive\\\\1_Python_REPOS\\\\0-PROJECTS\\\\LocalSearch\\\\warm-cache.ps1\")"
+    ]
+  }
+}

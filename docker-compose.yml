@@ -7,16 +7,18 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - D:/qdrant_data:/qdrant/storage
+      # For RAM disk performance: Z:\qdrant_storage:/var/lib/qdrant/storage
+      # For normal disk: ./qdrant_storage:/var/lib/qdrant/storage
+      - ./qdrant_storage:/var/lib/qdrant/storage
     restart: unless-stopped
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/collections || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333; printf \"GET /healthz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3; cat <&3' 2>/dev/null | grep -q '200 OK'"]
       interval: 15s
       timeout: 10s
-      retries: 40
-      start_period: 30s
+      retries: 80
+      start_period: 60s
 
   # ---------- LocalSearch (ingest + web UI) ----------
   localsearch:
@@ -32,8 +34,9 @@ services:
     volumes:
       # Mount your files to scan (read-only is safest)
       - D:/:/scandata:ro
-      # Share host metadata DB so dashboard + Docker ingest use the same DB
-      - D:/OneDrive/1_Python_REPOS/0-PROJECTS/LocalSearch/data:/data
+      # For RAM disk performance: Z:\localsearch_data:/app/data
+      # For normal disk: ./data:/app/data
+      - ./data:/app/data
       # Model cache (avoids re-downloading on rebuild)
       - model_cache:/root/.cache
     environment:

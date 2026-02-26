@@ -38,9 +38,15 @@ class AudioExtractor(BaseExtractor):
 
     def extract(self, file_path: str) -> ExtractionResult:
         try:
+            import os
+            
+            # Normalize path for ffmpeg/faster-whisper compatibility
+            # Convert backslashes to forward slashes and resolve path
+            normalized_path = os.path.normpath(file_path).replace("\\", "/")
+            
             model = self._get_model()
             segments, info = model.transcribe(
-                file_path,
+                normalized_path,
                 language=self.language,
                 beam_size=5,
                 vad_filter=True,
@@ -51,11 +57,11 @@ class AudioExtractor(BaseExtractor):
                 transcript_parts.append(segment.text.strip())
 
             transcript = " ".join(transcript_parts)
-            if not transcript.strip():
-                raise ExtractionError(f"No speech detected in audio: {file_path}")
-
+            
+            # Empty transcript is OK - silent audio, music without speech, ambient noise
+            # Return empty result with metadata instead of error
             return ExtractionResult(
-                text=transcript,
+                text=transcript.strip(),
                 metadata={
                     "language": info.language,
                     "language_probability": round(info.language_probability, 3),

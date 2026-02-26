@@ -7,6 +7,37 @@ echo "============================================="
 echo " LocalSearch Docker — mode: $MODE"
 echo "============================================="
 
+# Extract USN collector script to host (if /data is mounted)
+if [ -d "/data" ] && [ -w "/data" ]; then
+    echo "Extracting USN collector script to host..."
+    cat > /data/extract-and-collect.ps1 << 'EOF'
+#!/usr/bin/env pwsh
+# Extracted by Docker container - runs USN collector natively
+#Requires -RunAsAdministrator
+
+$ErrorActionPreference = "Stop"
+
+$pythonExe = "$env:USERPROFILE\Miniconda3\envs\312\python.exe"
+$dataDir = $PSScriptRoot
+
+Write-Host "=== USN Journal Collector ===" -ForegroundColor Cyan
+Write-Host "Collecting changes from USN journal..." -ForegroundColor Yellow
+
+Set-Location (Split-Path -Parent $dataDir)
+& $pythonExe -m localsearch.usn_collector
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "USN collection failed!" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "USN collection complete" -ForegroundColor Green
+EOF
+    chmod +x /data/extract-and-collect.ps1
+    echo "Script extracted to /data/extract-and-collect.ps1"
+    echo "Run on host: powershell -ExecutionPolicy Bypass -File data/extract-and-collect.ps1"
+fi
+
 case "$MODE" in
     ingest)
         echo "Starting ingestion pipeline..."

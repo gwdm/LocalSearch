@@ -270,17 +270,74 @@ class FileScanner:
             except (OSError, RuntimeError) as e:
                 logger.warning("USN: cannot save checkpoint for %s: — %s", dl, e)
 
+    def _reverse_translate_path(self, file_path: str) -> str:
+        """Reverse path_map: replace host prefix with container prefix.
+        
+        Used when reading paths from USN log (which has host paths) to
+        convert them to container paths that can be stat()ed inside Docker.
+        """
+        for container_prefix, host_prefix in self._path_map:
+            # Normalize separators for comparison
+            normalized_path = file_path.replace("\\", "/")
+            normalized_host = host_prefix.replace("\\", "/").rstrip("/")
+            
+            if normalized_path.startswith(normalized_host):
+                remainder = normalized_path[len(normalized_host):].lstrip("/")
+                return container_prefix.rstrip("/") + "/" + remainder
+        # No mapping found, return as-is
+        return file_path
+
+    def _scan_from_usn_log(self, log_file: Path) -> Generator[ScannedFile, None, None]:
+        """Read file paths from permanent USN log and yield changed files.
+        
+        Log format: timestamp|action|path
+        """
+        self._scan_files_checked = 0
+        self._scan_files_yielded = 0
+        
+        with open(log_file, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().strip().split("|", 2)
+                if len(parts) != 3:
+                    continue
+                
+                timestamp, action, file_path = parts
+                self._scan_files_checked += 1
+                
+                # Reverse translate host path → container path for Docker
+                container_path = self._reverse_translate_path(file_path)
+                
+                # Check if file exists and needs processing
+                sf = self._check_single_file(Path(container_path))
+                if sf is not None:
+                    self._scan_files_yielded += 1
+                    yield sf
+        
+        logger.info(
+            "USN log scan: %d paths checked, %d new/changed",
+            self._scan_files_checked, self._scan_files_yielded
+        )
+
     # ── Main scan entry point ────────────────────────────────────────────
 
     def scan(self, paths: Optional[list[str]] = None) -> Generator[ScannedFile, None, None]:
         """Scan configured paths and yield new or changed files.
 
-        Tries NTFS USN journal for fast incremental detection first.
-        Falls back to full directory walk if USN is unavailable.
+        Priority order:
+        1. Permanent USN log file (if exists and not empty)
+        2. NTFS USN journal for fast incremental detection
+        3. Full directory walk (fallback)
         """
         scan_paths = paths or self.config.scan_paths
         if not scan_paths:
             logger.warning("No scan paths configured")
+            return
+
+        # ── Try permanent USN log first ──
+        usn_log = Path(self.config.metadata_db).parent / "usn_changes.txt"
+        if usn_log.exists() and usn_log.stat().st_size > 0:
+            logger.info("Reading changes from permanent USN log: %s", usn_log)
+            yield from self._scan_from_usn_log(usn_log)
             return
 
         # ── Try USN incremental scan ──
