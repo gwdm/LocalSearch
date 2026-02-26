@@ -37,8 +37,8 @@ services:
       # For RAM disk performance: Z:\localsearch_data:/app/data
       # For normal disk: ./data:/app/data
       - ./data:/app/data
-      # Model cache disabled - will re-download on each rebuild
-      # - model_cache:/root/.cache
+      # Model cache (avoids re-downloading on rebuild)
+      - model_cache:/root/.cache
     environment:
       - LOCALSEARCH_CONFIG=/app/config.docker.yaml
       - NVIDIA_VISIBLE_DEVICES=all
@@ -56,4 +56,5 @@ services:
     #                docker compose run localsearch web
     command: ["both"]
 
-    name: localsearch_model_cache
+volumes:
+  model_cache:
