@@ -64,12 +64,13 @@ if (-not $dockerReady) {
 }
 
 # ── Step 1: Warm page cache ──────────────────────────────────────────────
-if (-not $SkipWarm) {
-    Write-Step "Warming Qdrant page cache"
-    & "$ProjectDir\warm-cache.ps1"
-} else {
-    Write-Host "Skipping cache warm (--SkipWarm)" -ForegroundColor Yellow
-}
+# DISABLED: Skip warmup to avoid preloading database on disk
+# if (-not $SkipWarm) {
+#     Write-Step "Warming Qdrant page cache"
+#     & "$ProjectDir\warm-cache.ps1"
+# } else {
+#     Write-Host "Skipping cache warm (--SkipWarm)" -ForegroundColor Yellow
+# }
 
 # ── Step 2: Build image if requested ─────────────────────────────────────
 if ($Build) {
